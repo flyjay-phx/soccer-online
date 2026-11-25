@@ -12,14 +12,31 @@
     font-family: "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif; }
   canvas { display: block; cursor: crosshair; }
   .hud { position: fixed; pointer-events: none; user-select: none; }
-  #score { top: 12px; left: 50%; transform: translateX(-50%); background: var(--panel); padding: 8px 18px;
-    border-radius: 10px; font-size: 20px; font-weight: 700; display: flex; gap: 14px; align-items: center; font-variant-numeric: tabular-nums; }
-  #score .b { color: var(--blue-t); } #score .r { color: var(--red-t); } #score .t { font-size: 15px; color: var(--muted); font-weight: 500; }
+  /* 상단 가운데 핑 */
+  #ping { top: 8px; left: 50%; transform: translateX(-50%); background: var(--panel); padding: 3px 14px; border-radius: 999px;
+    font-size: 13px; font-weight: 800; letter-spacing: .08em; color: #ffd166; font-variant-numeric: tabular-nums; border: 1px solid rgba(255,209,102,.35); }
+  #ping.bad { color: #ff7b72; border-color: rgba(255,123,114,.45); }
+  /* 하단 점수 바 */
+  #scorebar { left: 0; right: 0; bottom: 0; height: 34px; display: flex; align-items: center; justify-content: space-between;
+    background: linear-gradient(180deg, rgba(12,20,34,.92), rgba(4,8,16,.96)); border-top: 1px solid rgba(255,255,255,.12);
+    padding: 0 max(14px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(14px, env(safe-area-inset-left, 0px)); font-weight: 800; font-variant-numeric: tabular-nums; }
+  #scorebar .side { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  #scorebar .tag { padding: 2px 12px; border-radius: 4px; font-size: 13px; letter-spacing: .12em; color: #fff; }
+  #scorebar .b .tag { background: linear-gradient(90deg, #1d4fb8, #3d7cf0); } #scorebar .r .tag { background: linear-gradient(90deg, #e0463c, #a5221b); }
+  #scorebar .num { font-size: 20px; min-width: 22px; text-align: center; } #scorebar .b .num { color: var(--blue-t); } #scorebar .r .num { color: var(--red-t); }
+  #scorebar .keys { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+  /* 하단 가운데 미니맵 + 시계 */
+  #radar { bottom: 40px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; }
+  #radar .clock { background: rgba(4,8,16,.9); border: 1px solid rgba(255,255,255,.18); border-bottom: 0; border-radius: 6px 6px 0 0;
+    padding: 1px 12px; font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; display: flex; gap: 10px; }
+  #radar .clock .half { color: #ffd166; } 
+  #mini { display: block; width: 210px; height: 136px; border: 2px solid rgba(255,255,255,.25); border-radius: 6px; background: #2c6b34; }
   #cam { top: 12px; right: 12px; background: var(--panel); padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--muted); text-align: right; line-height: 1.5; }
-  #status { top: 12px; left: 12px; background: var(--panel); padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--muted); line-height: 1.5; }
+  #status { top: 64px; left: 12px; background: var(--panel); padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--muted); line-height: 1.5; }
   #msg { top: 30%; left: 50%; transform: translate(-50%, -50%); font-size: 40px; font-weight: 800;
     text-shadow: 0 3px 12px rgba(0,0,0,.7); opacity: 0; transition: opacity .2s; white-space: nowrap; }
-  #bars { bottom: 18px; left: 50%; transform: translateX(-50%); width: 360px; display: flex; flex-direction: column; gap: 6px; }
+  #bars { top: 12px; left: 12px; width: 220px; display: flex; flex-direction: column; gap: 4px; background: var(--panel); padding: 8px 10px; border-radius: 8px; }
+  #gaugeBox { bottom: 196px; left: 50%; transform: translateX(-50%); width: 300px; }
   .bar { height: 14px; background: rgba(0,0,0,.55); border-radius: 7px; overflow: hidden; position: relative; border: 1px solid rgba(255,255,255,.15); }
   .bar > i { position: absolute; inset: 0 auto 0 0; width: 0; display: block; }
   #gaugeWrap { visibility: hidden; }
@@ -28,7 +45,7 @@
   #gauge::after { content: ""; position: absolute; left: 90%; top: 0; bottom: 0; right: 0; background: rgba(255,60,60,.45); }
   #stam > i { background: #4fc3f7; }
   .lbl { font-size: 11px; color: var(--muted); }
-  #help { bottom: 14px; left: 12px; background: var(--panel); padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.65; color: var(--muted); }
+  #help { bottom: 44px; left: 12px; background: var(--panel); padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.65; color: var(--muted); }
   #help b { color: var(--text); display: inline-block; min-width: 74px; }
   .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(5,10,18,.72); padding: 16px; }
   .overlay[hidden] { display: none; }
@@ -53,21 +70,25 @@
   .invite { margin-top: 14px; font-size: 13px; color: var(--muted); }
   .invite code { display: block; margin-top: 4px; padding: 8px 10px; background: #0b1420; border-radius: 6px; color: var(--text); word-break: break-all; user-select: all; }
   #result { font-size: 20px; font-weight: 800; color: var(--text); }
-  @media (max-width: 700px) { #help { display: none; } #bars { width: calc(100% - 32px); } }
+  @media (max-width: 1150px) { #help { bottom: auto; top: 116px; } }
+  @media (max-width: 700px) { #help, #scorebar .keys { display: none; } #gaugeBox { width: calc(100% - 32px); } #mini { width: 160px; height: 104px; } }
 </style>
 <script type="importmap">
   { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
 </script>
 </head>
 <body>
-  <div id="score" class="hud"><span class="b">블루 <span id="sb">0</span></span><span>:</span><span class="r"><span id="sr">0</span> 레드</span><span class="t" id="timer">3:00</span></div>
+  <div id="ping" class="hud">PING --</div>
+  <div id="scorebar" class="hud">
+    <div class="side b"><span class="tag">BLUE</span><span class="num" id="sb">0</span><span class="keys">H 도움말 · Tab 팀·초대</span></div>
+    <div class="side r"><span class="keys">1~4 카메라</span><span class="num" id="sr">0</span><span class="tag">RED</span></div>
+  </div>
+  <div id="radar" class="hud"><div class="clock"><span class="half" id="half">경기</span><span id="timer">3:00</span></div><canvas id="mini" width="420" height="272"></canvas></div>
   <div id="status" class="hud">연결 중…</div>
   <div id="cam" class="hud">카메라: 쿼터뷰 (1~4)</div>
   <div id="msg" class="hud"></div>
-  <div id="bars" class="hud">
-    <div id="gaugeWrap"><div id="gaugeLabel">파워</div><div class="bar" id="gauge"><i></i></div></div>
-    <div class="lbl">스태미나</div><div class="bar" id="stam"><i></i></div>
-  </div>
+  <div id="bars" class="hud"><div class="lbl">스태미나</div><div class="bar" id="stam"><i></i></div></div>
+  <div id="gaugeBox" class="hud"><div id="gaugeWrap"><div id="gaugeLabel">파워</div><div class="bar" id="gauge"><i></i></div></div></div>
   <div id="help" class="hud">
     <div><b>마우스 커서</b>이동·패스·슛 방향 (자동으로 걸음)</div>
     <div><b>왼쪽 클릭</b>짧게: 커서까지 짧은 로빙 / 길게: 게이지 로빙</div>

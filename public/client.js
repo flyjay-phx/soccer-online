@@ -95,12 +95,12 @@ function makePlayerMesh(shirt, shorts, isKeeper = false) {
 function makeLabel(text, color) {
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
   const c = cv.getContext('2d');
-  c.font = 'bold 34px "Malgun Gothic", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.lineWidth = 7; c.strokeStyle = 'rgba(0,0,0,.75)'; c.strokeText(text, 128, 34);
+  c.font = 'bold 30px "Malgun Gothic", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.lineWidth = 6; c.strokeStyle = 'rgba(0,0,0,.85)'; c.strokeText(text, 128, 34);
   c.fillStyle = color; c.fillText(text, 128, 34);
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
-  sp.scale.set(2.0, 0.5, 1); sp.position.y = 2.25; sp.renderOrder = 10;
+  sp.scale.set(2.3, 0.575, 1); sp.position.y = 2.35; sp.renderOrder = 10;
   return sp;
 }
 
@@ -132,14 +132,22 @@ function buildPlayers(r) {
     scene.add(m); return m;
   });
 }
+// 이름표 색: 나 = 노랑, 우리 팀 = 초록, 상대 = 팀 색, AI = 회색
+function labelColor(p) {
+  if (!p.human) return '#c8ced6';
+  if (p.id === net.you) return '#ffe066';
+  const mine = roster.find(q => q.id === net.you);
+  if (mine && mine.team === p.team) return '#8dff9a';
+  return p.team === 0 ? '#9fc0ff' : '#ffb0a8';
+}
 function applyRoster(r) {
   if (playerMeshes.length !== r.players.length) buildPlayers(r);
   roster = r.players; rosterAI = r.ai !== false;
   r.players.forEach((p, i) => {
     const m = playerMeshes[i];
     if (m.userData.label) { m.remove(m.userData.label); m.userData.label = null; }
-    const text = p.human ? (p.id === net.you ? `${p.name} (나)` : p.name) : 'AI';
-    m.userData.label = makeLabel(text, p.human ? (p.team === 0 ? '#9fc0ff' : '#ffb0a8') : '#d0d6de');
+    const text = `[${p.team === 0 ? 'BLUE' : 'RED'}]${p.human ? p.name : 'AI'}`;
+    m.userData.label = makeLabel(text, labelColor(p));
     m.add(m.userData.label);
   });
   renderLobby();
@@ -157,7 +165,7 @@ function connect(name, room) {
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.t === 's') { net.snaps.push({ at: performance.now(), s: m }); if (net.snaps.length > 40) net.snaps.shift(); onSnapshot(m); }
-    else if (m.t === 'welcome') { net.you = m.you; net.room = m.room; renderLobby(); }
+    else if (m.t === 'welcome') { net.you = m.you; net.room = m.room; if (roster.length) applyRoster({ players: roster, ai: rosterAI }); else renderLobby(); }
     else if (m.t === 'roster') applyRoster(m);
     else if (m.t === 'pong') net.ping = Math.round(performance.now() - m.c);
   };
@@ -306,7 +314,7 @@ function updateCamera(dt) {
   const focus = new THREE.Vector3(lerp(me.x, b.x, 0.3), 0, lerp(me.z, b.z, 0.3));
   if (camMode === 0) { look.set(b.x * 0.75 + me.x * 0.25, 0, (b.z + me.z) * 0.25); want.set(look.x, 20, ARENA_Z + 17); }
   else if (camMode === 1) { want.set(me.x - fx * 7.5, 4.2, me.z - fz * 7.5); look.set(me.x + fx * 6, 1, me.z + fz * 6); }
-  else if (camMode === 2) { look.copy(focus); want.set(focus.x - 7, 16, focus.z + 13); }
+  else if (camMode === 2) { look.copy(focus); want.set(focus.x - 3, 21, focus.z + 15); }   // 높은 쿼터뷰
   else { look.copy(focus); want.set(focus.x, 34, focus.z + 0.01); }
   const k = 1 - Math.exp(-(camMode === 1 ? 6 : 4.5) * dt);
   camera.position.lerp(want, k); camLook.lerp(look, k); camera.lookAt(camLook);
@@ -347,8 +355,38 @@ const rollAxis = new THREE.Vector3();
 const KICK_NAMES = { lob: '로빙패스', ground: '땅볼패스', shot: '슛' };
 const KICK_COLORS = { lob: 0x7fd3ff, ground: 0x9cff8a, shot: 0xffd166 };
 
+// ---------- 미니맵 (하단 가운데) ----------
+const mini = $('mini'), mctx = mini.getContext('2d');
+function drawMini() {
+  const W = mini.width, H = mini.height, pad = 16, sx = (W - pad * 2) / FIELD_L, sz = (H - pad * 2) / FIELD_W;
+  const X = x => pad + (x + HALF_L) * sx, Z = z => pad + (z + HALF_W) * sz;
+  mctx.fillStyle = '#2c6b34'; mctx.fillRect(0, 0, W, H);
+  mctx.fillStyle = '#327a3b';
+  for (let i = 0; i < 10; i += 2) mctx.fillRect(X(-HALF_L + i * FIELD_L / 10), Z(-HALF_W), FIELD_L / 10 * sx, FIELD_W * sz);
+  mctx.strokeStyle = 'rgba(255,255,255,.85)'; mctx.lineWidth = 2;
+  mctx.strokeRect(X(-HALF_L), Z(-HALF_W), FIELD_L * sx, FIELD_W * sz);
+  mctx.beginPath(); mctx.moveTo(X(0), Z(-HALF_W)); mctx.lineTo(X(0), Z(HALF_W)); mctx.stroke();
+  mctx.beginPath(); mctx.arc(X(0), Z(0), 4.5 * sx, 0, Math.PI * 2); mctx.stroke();
+  mctx.fillStyle = '#fff';
+  for (const s of [-1, 1]) {   // 페널티 박스와 골대
+    mctx.strokeRect(s < 0 ? X(-HALF_L) : X(HALF_L - 8), Z(-8), 8 * sx, 16 * sz);
+    mctx.fillRect(s < 0 ? X(-HALF_L) - 6 : X(HALF_L), Z(-GOAL_W / 2), 6, GOAL_W * sz);
+  }
+  view.players.forEach((p, i) => {
+    const info = roster[i]; if (!info || !(rosterAI || info.human)) return;
+    const me = i === net.you;
+    mctx.beginPath(); mctx.arc(X(p.x), Z(p.z), me ? 8 : 6, 0, Math.PI * 2);
+    mctx.fillStyle = info.team === 0 ? '#3d7cf0' : '#e0463c'; mctx.fill();
+    mctx.lineWidth = me ? 3 : 1.5; mctx.strokeStyle = me ? '#ffe066' : 'rgba(0,0,0,.6)'; mctx.stroke();
+  });
+  view.keepers.forEach((k, i) => { mctx.beginPath(); mctx.arc(X(k.x), Z(k.z), 6, 0, Math.PI * 2); mctx.fillStyle = i === 0 ? '#19a974' : '#e8b91a'; mctx.fill(); });
+  mctx.beginPath(); mctx.arc(X(clamp(view.ball.x, -ARENA_X, ARENA_X)), Z(clamp(view.ball.z, -ARENA_Z, ARENA_Z)), 4.5, 0, Math.PI * 2);
+  mctx.fillStyle = '#fff'; mctx.fill(); mctx.lineWidth = 1.5; mctx.strokeStyle = '#111'; mctx.stroke();
+}
+
 function updateHUD() {
   const s = view.s; if (!s) return;
+  $('ping').textContent = `PING ${net.ping}`; $('ping').classList.toggle('bad', net.ping > 150);
   $('sb').textContent = s.sc[0]; $('sr').textContent = s.sc[1];
   $('timer').textContent = `${Math.floor(s.tm / 60)}:${String(s.tm % 60).padStart(2, '0')}`;
   const me = roster.find(p => p.id === net.you);
@@ -360,7 +398,7 @@ function updateHUD() {
     spTxt = `\n${SP_NAMES[type]} - ${s.sp[1] === 0 ? '블루' : '레드'}`;
     if (s.sp[2] === net.you && type !== 'kickoff') spTxt += type === 'throw' ? '\n내가 던짐: 클릭으로 패스 (제자리)' : '\n내가 참: 클릭 패스 / Space 슛 (제자리)';
   }
-  $('status').textContent = `방: ${net.room} · 접속 ${humans}명 · 핑 ${net.ping}ms\n공: ${ballTxt}${spTxt}`;
+  $('status').textContent = `방: ${net.room} · 접속 ${humans}명\n공: ${ballTxt}${spTxt}`;
   $('status').style.whiteSpace = 'pre';
   $('cam').textContent = `카메라: ${CAMS[camMode]} (1~4)\n${me ? (me.team === 0 ? '블루 팀' : '레드 팀') : '관전 중'} · Tab: 팀·초대`;
   $('cam').style.whiteSpace = 'pre';
@@ -388,6 +426,7 @@ function frame(now) {
     view.players.forEach((p, i) => { const m = playerMeshes[i]; if (!m) return; m.visible = rosterAI || !!roster[i]?.human; if (m.visible) syncPlayerMesh(m, p, dt); });
     keeperMeshes.forEach((m, i) => { m.visible = !!view.keepers[i]; if (m.visible) syncKeeperMesh(m, view.keepers[i]); });
     ballMesh.position.copy(view.ball);
+    drawMini();
     const sp = Math.hypot(view.ballVel.x, view.ballVel.z);
     if (sp > 0.01) { rollAxis.set(view.ballVel.z, 0, -view.ballVel.x).normalize(); ballMesh.rotateOnWorldAxis(rollAxis, sp * dt / BALL_R); }
     ballBlob.position.set(view.ball.x, 0.012, view.ball.z);
