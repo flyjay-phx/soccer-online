@@ -1,0 +1,10 @@
+# Render 배포 설정 (Blueprint)
+services:
+  - type: web
+    name: soccer-online
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: echo "빌드 필요 없음"
+    startCommand: node server.js
+    healthCheckPath: /health

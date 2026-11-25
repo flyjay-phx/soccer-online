@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3D 축구 온라인</title>
+<style>
+  :root { color-scheme: dark; --panel: rgba(10, 18, 30, 0.78); --card: #101b2b; --line: #24364f; --text: #f2f5fa; --muted: #a9b4c4;
+    --blue: #3d7cf0; --blue-t: #7fa9ff; --red: #e0463c; --red-t: #ff8a80; --ok: #5be37a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1420; color: var(--text);
+    font-family: "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif; }
+  canvas { display: block; cursor: crosshair; }
+  .hud { position: fixed; pointer-events: none; user-select: none; }
+  #score { top: 12px; left: 50%; transform: translateX(-50%); background: var(--panel); padding: 8px 18px;
+    border-radius: 10px; font-size: 20px; font-weight: 700; display: flex; gap: 14px; align-items: center; font-variant-numeric: tabular-nums; }
+  #score .b { color: var(--blue-t); } #score .r { color: var(--red-t); } #score .t { font-size: 15px; color: var(--muted); font-weight: 500; }
+  #cam { top: 12px; right: 12px; background: var(--panel); padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--muted); text-align: right; line-height: 1.5; }
+  #status { top: 12px; left: 12px; background: var(--panel); padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--muted); line-height: 1.5; }
+  #msg { top: 30%; left: 50%; transform: translate(-50%, -50%); font-size: 40px; font-weight: 800;
+    text-shadow: 0 3px 12px rgba(0,0,0,.7); opacity: 0; transition: opacity .2s; white-space: nowrap; }
+  #bars { bottom: 18px; left: 50%; transform: translateX(-50%); width: 360px; display: flex; flex-direction: column; gap: 6px; }
+  .bar { height: 14px; background: rgba(0,0,0,.55); border-radius: 7px; overflow: hidden; position: relative; border: 1px solid rgba(255,255,255,.15); }
+  .bar > i { position: absolute; inset: 0 auto 0 0; width: 0; display: block; }
+  #gaugeWrap { visibility: hidden; }
+  #gaugeLabel { font-size: 13px; text-align: center; margin-bottom: 2px; font-weight: 700; }
+  #gauge > i { background: linear-gradient(90deg, #5be37a, #f5d442); }
+  #gauge::after { content: ""; position: absolute; left: 90%; top: 0; bottom: 0; right: 0; background: rgba(255,60,60,.45); }
+  #stam > i { background: #4fc3f7; }
+  .lbl { font-size: 11px; color: var(--muted); }
+  #help { bottom: 14px; left: 12px; background: var(--panel); padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.65; color: var(--muted); }
+  #help b { color: var(--text); display: inline-block; min-width: 74px; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(5,10,18,.72); padding: 16px; }
+  .overlay[hidden] { display: none; }
+  .card { background: var(--card); border: 1px solid var(--line); padding: 24px 28px; border-radius: 14px; width: min(520px, 100%); }
+  .card h1 { margin: 0 0 6px; font-size: 24px; }
+  .card p { color: var(--muted); line-height: 1.6; margin: 6px 0; }
+  .field { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+  .field label { font-size: 13px; color: var(--muted); }
+  .field input { font: inherit; font-size: 16px; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: #0b1420; color: var(--text); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  button { font: inherit; font-size: 15px; font-weight: 700; padding: 10px 18px; border-radius: 9px; border: 0; background: var(--blue); color: #fff; cursor: pointer; }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+  button.red { background: var(--red); }
+  button:focus-visible, input:focus-visible { outline: 2px solid #ffd166; outline-offset: 2px; }
+  .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+  .team { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  .team h3 { margin: 0 0 6px; font-size: 15px; }
+  .team.b h3 { color: var(--blue-t); } .team.r h3 { color: var(--red-t); }
+  .team ul { list-style: none; margin: 0; padding: 0; font-size: 14px; line-height: 1.8; }
+  .team li.ai { color: var(--muted); }
+  .team li.me { font-weight: 700; }
+  .invite { margin-top: 14px; font-size: 13px; color: var(--muted); }
+  .invite code { display: block; margin-top: 4px; padding: 8px 10px; background: #0b1420; border-radius: 6px; color: var(--text); word-break: break-all; user-select: all; }
+  #result { font-size: 20px; font-weight: 800; color: var(--text); }
+  @media (max-width: 700px) { #help { display: none; } #bars { width: calc(100% - 32px); } }
+</style>
+<script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+  <div id="score" class="hud"><span class="b">블루 <span id="sb">0</span></span><span>:</span><span class="r"><span id="sr">0</span> 레드</span><span class="t" id="timer">3:00</span></div>
+  <div id="status" class="hud">연결 중…</div>
+  <div id="cam" class="hud">카메라: 쿼터뷰 (1~4)</div>
+  <div id="msg" class="hud"></div>
+  <div id="bars" class="hud">
+    <div id="gaugeWrap"><div id="gaugeLabel">파워</div><div class="bar" id="gauge"><i></i></div></div>
+    <div class="lbl">스태미나</div><div class="bar" id="stam"><i></i></div>
+  </div>
+  <div id="help" class="hud">
+    <div><b>마우스 커서</b>이동·패스·슛 방향 (자동으로 걸음)</div>
+    <div><b>왼쪽 클릭</b>길게 눌렀다 떼기: 로빙패스</div>
+    <div><b>오른쪽 클릭</b>길게 눌렀다 떼기: 땅볼패스</div>
+    <div><b>Space</b>공 있을 때 슛(길게) / 공중볼 헤딩</div>
+    <div><b>Z / X</b>달리기 / 천천히 걷기</div>
+    <div><b>C</b>점프 (태클 피하기)</div>
+    <div><b>V / B</b>커트 / 슬라이딩 태클</div>
+    <div><b>Shift</b>몸싸움 &nbsp; <b style="min-width:auto">Q / E</b> 개인기</div>
+    <div><b>1 ~ 4</b>카메라 &nbsp; <b style="min-width:auto">Tab</b> 팀·초대 &nbsp; <b style="min-width:auto">H</b> 도움말</div>
+  </div>
+
+  <!-- 접속 화면 -->
+  <div id="joinView" class="overlay">
+    <form class="card" id="joinForm">
+      <h1>3D 축구 온라인</h1>
+      <p>3대3 경기입니다. 비어 있는 자리는 AI가 채우고, 골키퍼는 양쪽 모두 AI입니다.</p>
+      <div class="field"><label for="nameInput">내 이름</label><input id="nameInput" maxlength="12" placeholder="예: 철수" required></div>
+      <div class="field"><label for="roomInput">방 이름 (친구와 같은 방 이름을 쓰면 같이 경기)</label><input id="roomInput" maxlength="20" value="main"></div>
+      <div class="row"><button type="submit">입장</button></div>
+    </form>
+  </div>
+
+  <!-- 대기실 / 팀 화면 -->
+  <div id="lobbyView" class="overlay" hidden>
+    <div class="card">
+      <h1 id="lobbyTitle">대기실</h1>
+      <p id="result"></p>
+      <p id="lobbyInfo">친구가 들어오면 사람이 AI 자리를 대신합니다. 아무나 경기 시작을 누르면 시작합니다.</p>
+      <div class="teams">
+        <div class="team b"><h3>블루 (오른쪽 공격)</h3><ul id="teamB"></ul></div>
+        <div class="team r"><h3>레드 (왼쪽 공격)</h3><ul id="teamR"></ul></div>
+      </div>
+      <div class="row">
+        <button id="startBtn" type="button">경기 시작</button>
+        <button id="toBlue" type="button" class="ghost">블루로 이동</button>
+        <button id="toRed" type="button" class="ghost">레드로 이동</button>
+        <button id="closeLobby" type="button" class="ghost">닫기 (Tab)</button>
+      </div>
+      <div class="invite">친구 초대 주소 (이 주소를 보내면 같은 방으로 들어옵니다)<code id="inviteLink"></code></div>
+    </div>
+  </div>
+  <script type="module" src="client.js"></script>
+</body>
+</html>
