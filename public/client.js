@@ -240,11 +240,12 @@ addEventListener('mouseup', e => {
   if (k && localCharge?.k === k) { localCharge = null; sendInput(); send({ t: 'r', k }); }
 });
 addEventListener('keydown', e => {
+  // F1~F5 카메라 (브라우저 기본 동작인 도움말·새로고침은 막음)
+  if (/^F[1-5]$/.test(e.code)) { e.preventDefault(); if (!e.repeat && joinView.hidden) setCam(Number(e.code.slice(1)) - 1); return; }
   if (['Space', 'ShiftLeft', 'ShiftRight', 'Tab'].includes(e.code) && joinView.hidden) e.preventDefault();
   if (e.repeat || !joinView.hidden) return;
   if (e.code === 'Tab') { lobbyView.hidden = lastState === 'play' ? !lobbyView.hidden : false; renderLobby(); return; }
   if (e.code === 'KeyH') { $('help').hidden = !$('help').hidden; return; }
-  if (/^Digit[1-5]$/.test(e.code)) { camMode = Number(e.code.slice(5)) - 1; store.set('soccer-cam2', camMode); return; }
   if (!playing()) return;
   // 키 배치: Shift 달리기 / Z 슬라이딩 태클 / X 커트 / C 점프 / V 몸싸움 / A 천천히 걷기 / Q·E 개인기
   const act = { KeyZ: 'slide', KeyX: 'cut', KeyC: 'jump', KeyV: 'shoulder', KeyQ: 'skillL', KeyE: 'skillR' }[e.code];
@@ -304,49 +305,24 @@ function interpolate(now) {
 }
 
 // ============================== 그리기 ==============================
-const CAMS = ['측면 방송 시점', '선수 뒤 3인칭', '쿼터뷰', '탑뷰', '회전 추적'];
-const CAM_DEFAULT = 4;   // 기본: 회전 추적
-let camMode = Number(store.get('soccer-cam2') ?? CAM_DEFAULT); if (!(camMode >= 0 && camMode < CAMS.length)) camMode = CAM_DEFAULT;
+// 카메라 5종 (F1~F5). 모두 화면 방향이 고정이고, 선수·공을 따라 위치만 움직임 (화면이 돌지 않음)
+const CAMS = ['높은 쿼터뷰', '가까운 쿼터뷰', '측면 방송', '탑뷰', '골대 뒤'];
+let camMode = Number(store.get('soccer-cam3') ?? 0); if (!(camMode >= 0 && camMode < CAMS.length)) camMode = 0;
+function setCam(i) { camMode = i; store.set('soccer-cam3', i); updateHUD(); }
 const camLook = new THREE.Vector3();
-// 회전 추적 카메라: 높은 곳에서 내려다보며, 공(또는 공격 방향) 쪽을 보도록 천천히 돌아감
-// - 방향 차이가 35도를 넘을 때만 돌기 시작하고 8도 안으로 들어오면 멈춤 (작은 방향 바꿈에 화면이 흔들리지 않게)
-// - 차이가 클수록 빨리 돌되 초당 최대 100도
-const orbit = { yaw: 0, turning: false, init: false };
-function updateOrbit(me, dt) {
-  // 처음과 킥오프 때는 내가 공격하는 방향을 바라봄 (블루 +x, 레드 -x)
-  const kickoff = view.s?.sp && SP_TYPES[view.s.sp[0]] === 'kickoff';
-  if ((!orbit.init || kickoff) && roster[net.you]) { orbit.yaw = roster[net.you].team === 1 ? Math.PI : 0; orbit.init = true; orbit.turning = false; }
-  // 기준 방향: 내가 공을 가지면 상대 골대 쪽, 아니면 공 쪽.
-  // (내 달리는 방향을 기준으로 하면 커서와 카메라가 서로 따라 돌아 선수가 원을 그리게 됨)
-  const team = roster[net.you]?.team ?? 0, b = view.ball;
-  let tx, tz;
-  if (view.s?.o === net.you) { tx = (team === 0 ? HALF_L : -HALF_L) - me.x; tz = -me.z * 0.5; }
-  else { tx = b.x - me.x; tz = b.z - me.z; if (Math.hypot(tx, tz) < 4) { orbit.turning = false; return; } }
-  const diff = wrap(Math.atan2(tz, tx) - orbit.yaw), ad = Math.abs(diff);
-  if (ad > 35 * DEG2) orbit.turning = true;
-  if (ad < 8 * DEG2) orbit.turning = false;
-  if (orbit.turning) orbit.yaw = wrap(orbit.yaw + Math.sign(diff) * Math.min(ad, Math.min(100 * DEG2, ad * 1.6) * dt));
-}
-const DEG2 = Math.PI / 180;
 function updateCamera(dt) {
-  const me = view.players[net.you] || { x: 0, z: 0, yaw: 0, vx: 0, vz: 0 }, b = view.ball;
-  if (camMode === 4) {
-    updateOrbit(me, dt);
-    const dx = Math.cos(orbit.yaw), dz = Math.sin(orbit.yaw);
-    const fc = new THREE.Vector3(lerp(me.x, b.x, 0.25), 0, lerp(me.z, b.z, 0.25));
-    const want = new THREE.Vector3(fc.x - dx * 14, 19, fc.z - dz * 14), look = new THREE.Vector3(fc.x + dx * 4, 0, fc.z + dz * 4);
-    const k = 1 - Math.exp(-5 * dt);
-    camera.position.lerp(want, k); camLook.lerp(look, k); camera.lookAt(camLook);
-    return;
-  }
-  const fx = Math.cos(me.yaw), fz = Math.sin(me.yaw);
+  const me = view.players[net.you] || { x: 0, z: 0 }, b = view.ball;
   const want = new THREE.Vector3(), look = new THREE.Vector3();
   const focus = new THREE.Vector3(lerp(me.x, b.x, 0.3), 0, lerp(me.z, b.z, 0.3));
-  if (camMode === 0) { look.set(b.x * 0.75 + me.x * 0.25, 0, (b.z + me.z) * 0.25); want.set(look.x, 20, ARENA_Z + 17); }
-  else if (camMode === 1) { want.set(me.x - fx * 7.5, 4.2, me.z - fz * 7.5); look.set(me.x + fx * 6, 1, me.z + fz * 6); }
-  else if (camMode === 2) { look.copy(focus); want.set(focus.x - 3, 21, focus.z + 15); }   // 높은 쿼터뷰
-  else { look.copy(focus); want.set(focus.x, 34, focus.z + 0.01); }
-  const k = 1 - Math.exp(-(camMode === 1 ? 6 : 4.5) * dt);
+  if (camMode === 0) { look.copy(focus); want.set(focus.x - 3, 21, focus.z + 15); }                       // F1 높은 쿼터뷰: 넓게
+  else if (camMode === 1) { look.copy(focus); want.set(focus.x - 2, 11, focus.z + 9); }                   // F2 가까운 쿼터뷰: 선수 크게
+  else if (camMode === 2) { look.set(b.x * 0.75 + me.x * 0.25, 0, (b.z + me.z) * 0.25); want.set(look.x, 20, ARENA_Z + 17); }   // F3 측면 방송: TV 중계처럼 옆에서
+  else if (camMode === 3) { look.copy(focus); want.set(focus.x, 34, focus.z + 0.01); }                    // F4 탑뷰: 바로 위
+  else {                                                                                                   // F5 골대 뒤: 내 골대 쪽 뒤에서 공격 방향을 봄
+    const d = roster[net.you]?.team === 1 ? -1 : 1;
+    look.set(focus.x + d * 6, 0, focus.z); want.set(focus.x - d * 14, 12, focus.z);
+  }
+  const k = 1 - Math.exp(-4.5 * dt);
   camera.position.lerp(want, k); camLook.lerp(look, k); camera.lookAt(camLook);
 }
 
@@ -430,7 +406,7 @@ function updateHUD() {
   }
   $('status').textContent = `방: ${net.room} · 접속 ${humans}명\n공: ${ballTxt}${spTxt}`;
   $('status').style.whiteSpace = 'pre';
-  $('cam').textContent = `카메라: ${CAMS[camMode]} (1~5)\n${me ? (me.team === 0 ? '블루 팀' : '레드 팀') : '관전 중'} · Tab: 팀·초대`;
+  $('cam').textContent = `카메라: F${camMode + 1} ${CAMS[camMode]} (F1~F5)\n${me ? (me.team === 0 ? '블루 팀' : '레드 팀') : '관전 중'} · Tab: 팀·초대`;
   $('cam').style.whiteSpace = 'pre';
   const my = view.players[net.you];
   if (localCharge && my) {
