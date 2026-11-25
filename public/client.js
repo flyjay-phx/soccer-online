@@ -123,7 +123,7 @@ const aimLine = new THREE.Line(aimLineGeo, new THREE.LineBasicMaterial({ color: 
 const keeperMeshes = [makePlayerMesh(0x19a974, 0x1d1d1d, true), makePlayerMesh(0xe8b91a, 0x1d1d1d, true)];
 keeperMeshes.forEach(k => scene.add(k));
 let playerMeshes = [];   // 선수 수는 서버가 알려줌
-let roster = [];
+let roster = [], rosterAI = true;
 
 function buildPlayers(r) {
   for (const m of playerMeshes) scene.remove(m);
@@ -134,7 +134,7 @@ function buildPlayers(r) {
 }
 function applyRoster(r) {
   if (playerMeshes.length !== r.players.length) buildPlayers(r);
-  roster = r.players;
+  roster = r.players; rosterAI = r.ai !== false;
   r.players.forEach((p, i) => {
     const m = playerMeshes[i];
     if (m.userData.label) { m.remove(m.userData.label); m.userData.label = null; }
@@ -202,7 +202,7 @@ function renderLobby() {
   for (const [team, el] of [[0, $('teamB')], [1, $('teamR')]]) {
     el.replaceChildren(...roster.filter(p => p.team === team).map(p => {
       const li = document.createElement('li');
-      li.textContent = p.human ? p.name + (p.id === net.you ? ' (나)' : '') : 'AI';
+      li.textContent = p.human ? p.name + (p.id === net.you ? ' (나)' : '') : rosterAI ? 'AI' : '빈 자리 (친구 대기)';
       li.className = p.human ? (p.id === net.you ? 'me' : '') : 'ai';
       return li;
     }));
@@ -385,8 +385,8 @@ function frame(now) {
   if (playing() && now - lastSent > 50) sendInput();
 
   if (interpolate(now)) {
-    view.players.forEach((p, i) => playerMeshes[i] && syncPlayerMesh(playerMeshes[i], p, dt));
-    view.keepers.forEach((k, i) => syncKeeperMesh(keeperMeshes[i], k));
+    view.players.forEach((p, i) => { const m = playerMeshes[i]; if (!m) return; m.visible = rosterAI || !!roster[i]?.human; if (m.visible) syncPlayerMesh(m, p, dt); });
+    keeperMeshes.forEach((m, i) => { m.visible = !!view.keepers[i]; if (m.visible) syncKeeperMesh(m, view.keepers[i]); });
     ballMesh.position.copy(view.ball);
     const sp = Math.hypot(view.ballVel.x, view.ballVel.z);
     if (sp > 0.01) { rollAxis.set(view.ballVel.z, 0, -view.ballVel.x).normalize(); ballMesh.rotateOnWorldAxis(rollAxis, sp * dt / BALL_R); }

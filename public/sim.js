@@ -127,6 +127,35 @@ function collideGoals(b) {
   }
 }
 
+// ---------- 클릭 패스: 파워별 도달 거리 표 (실제 공 물리로 미리 계산) ----------
+export const TAP_T = 0.18;                       // 이보다 짧게 누르면 '클릭'
+export const TAP_MAX = { ground: 16, lob: 20 };  // 클릭으로 보낼 수 있는 최대 거리(m), 더 멀면 게이지 사용
+function kickVel(type, power) {
+  if (type === 'ground') return { vh: 4 + power * 16, vy: 0.15, spin: 0 };
+  if (type === 'lob') return { vh: 6 + power * 14, vy: 3.5 + power * 7.5, spin: 18 };
+  return { vh: 12 + power * 20, vy: 0.6 + power * 2.4, spin: 0 };
+}
+function kickReach(type, power) {
+  const b = new Ball(), k = kickVel(type, power);
+  b.pos.set(-20, BALL_R + 0.01, 0); b.vel.set(k.vh, k.vy, 0); b.spin.set(0, 0, k.spin);
+  let flew = false;
+  for (let i = 0; i < 900; i++) {
+    b.step(DT);
+    if (b.pos.y > BALL_R + 0.05) flew = true;
+    if (type === 'lob' && flew && b.pos.y <= BALL_R + 1e-3) break;            // 로빙: 첫 착지 지점
+    if (type === 'ground' && hlen(b.vel) < 3) break;                         // 땅볼: 받기 좋은 속도(3m/s)로 도착
+  }
+  return b.pos.x + 20;
+}
+const REACH = {};
+function quickPower(type, dist) {
+  if (!REACH[type]) REACH[type] = Array.from({ length: 51 }, (_, i) => kickReach(type, i / 50));
+  const tb = REACH[type], d = Math.min(dist, TAP_MAX[type]);
+  if (d <= tb[0]) return 0;
+  for (let i = 1; i < tb.length; i++) if (tb[i] >= d) return (i - 1 + (d - tb[i - 1]) / (tb[i] - tb[i - 1])) / 50;
+  return 1;
+}
+
 // ============================== 필드 선수 ==============================
 class Player {
   constructor(game, id, team, slot) {
@@ -164,8 +193,10 @@ class Player {
     if (!c || (type && c.type !== type)) return;
     this.charge = null;
     if (!this.hasBall) return;
-    let power = clamp(c.t / 1.0, 0.05, 1);
     const t = this.input.target;
+    // 짧게 클릭(탭)하면 커서까지 거리에 맞춰 자동 파워 (가까운 땅볼·로빙만). 길게 누르면 게이지 그대로
+    const tap = c.t < TAP_T && c.type !== 'shot' && c.want === undefined;
+    let power = tap ? quickPower(c.type, hdist(t, this.pos)) : clamp(c.t / 1.0, 0.05, 1);
     if (this.isTaker('throw')) power = Math.min(power, 0.55);   // 스로인은 손으로 던지므로 멀리 못 감
     const yaw = Math.atan2(t.z - this.pos.z, t.x - this.pos.x);
     this.pendingKick = { type: c.type, power, target: t.clone(), yaw, turned: Math.abs(wrap(yaw - this.yaw)), t: 0 };
@@ -479,7 +510,7 @@ class AIBrain {
       for (const o of g.players) if (o.team !== p.team) { const d = hdist(o.pos, p.pos); if (d < dOpp) { dOpp = d; nearOpp = o; } }
       if (dGoal < 17 && decide && Math.random() < 0.5) {
         const k = g.keepers[1 - p.team];
-        inp.target.set(goalX, 0, (k.pos.z > 0 ? -1 : 1) * (GOAL_W / 2 - 0.6));
+        inp.target.set(goalX, 0, ((k ? k.pos.z : -p.pos.z) > 0 ? -1 : 1) * (GOAL_W / 2 - 0.6));
         p.charge = { type: 'shot', t: 0, want: rand(0.55, 0.85) };
         return;
       }
@@ -542,12 +573,14 @@ class AIBrain {
 
 // ============================== 경기 ==============================
 export class Game {
-  constructor(teamSize = 3) {
+  // opts.ai: 빈 자리를 AI가 채움 / opts.keepers: AI 골키퍼 사용
+  constructor(teamSize = 3, opts = {}) {
     this.teamSize = teamSize;
+    this.ai = opts.ai ?? true; this.useKeepers = opts.keepers ?? true;
     this.ball = new Ball();
-    this.players = [];
-    for (let team = 0; team < 2; team++) for (let s = 0; s < teamSize; s++) this.players.push(new Player(this, this.players.length, team, s));
-    this.keepers = [new Keeper(this, 0), new Keeper(this, 1)];
+    this.slots = [];               // 모든 자리 (번호 = 선수 id)
+    for (let team = 0; team < 2; team++) for (let s = 0; s < teamSize; s++) this.slots.push(new Player(this, this.slots.length, team, s));
+    this.keepers = this.useKeepers ? [new Keeper(this, 0), new Keeper(this, 1)] : [];
     this.score = [0, 0]; this.timeLeft = MATCH_TIME;
     this.state = 'lobby';          // lobby | play | end
     this.freezeT = 0; this.freezeKind = null; this.afterFreeze = null;
@@ -556,6 +589,8 @@ export class Game {
     this.offside = null;           // 패스 순간 오프사이드 위치에 있던 선수들 { team, ids }
     this.placeForKickoff(0);
   }
+  // 경기에 실제로 뛰는 선수 (AI가 꺼져 있으면 사람만)
+  get players() { return this.ai ? this.slots : this.slots.filter(p => p.isHuman); }
   msg(text, dur = 1.2) { this.msgText = text; this.msgT = dur; }
 
   start() {
@@ -568,7 +603,7 @@ export class Game {
     const b = this.ball;
     b.owner = null; b.keeper = null; b.vel.set(0, 0, 0); b.spin.set(0, 0, 0); b.pos.set(0, BALL_R, 0);
     for (const k of this.keepers) k.reset();
-    for (const p of this.players) {
+    for (const p of this.slots) {
       p.vel.set(0, 0, 0); p.y = 0; p.vy = 0; p.state = 'normal'; p.charge = null; p.pendingKick = null; p.actions.length = 0;
       p.setYaw(p.team === 0 ? 0 : Math.PI);
       for (const k in p.cd) p.cd[k] = 0;
@@ -581,10 +616,13 @@ export class Game {
 
   kickoff(team) {
     this.placeForKickoff(team);
-    const taker = this.players.find(p => p.team === team && p.slot === 0);
-    this.giveBall(taker);
-    this.offside = null;
-    this.setPiece = { type: 'kickoff', team, taker, spot: new V3(0, 0, 0), kickId: this.ball.kickId, t: 0 };
+    const pick = t => this.players.find(p => p.team === t && p.slot === 0) || this.players.find(p => p.team === t);
+    const taker = pick(team) || pick(1 - team);   // 혼자 연습할 때는 있는 사람이 킥오프
+    this.offside = null; this.setPiece = null;
+    if (taker) {
+      this.giveBall(taker);
+      this.setPiece = { type: 'kickoff', team, taker, spot: new V3(0, 0, 0), kickId: this.ball.kickId, t: 0 };
+    }
     this.freeze(0.9, 'kickoff');
     this.msg('킥오프', 0.9);
   }
@@ -625,7 +663,7 @@ export class Game {
       // 키커와 골키퍼를 뺀 모두는 페널티 박스 밖으로
       const s = taker.dir;
       for (const p of this.players) if (p !== taker && s * p.pos.x > HALF_L - BOX_DEPTH - 1) p.pos.x = s * (HALF_L - BOX_DEPTH - 1.5);
-      this.keepers[1 - team].reset();
+      this.keepers[1 - team]?.reset();
     }
     this.setPiece = { type, team, taker, spot: spot.clone(), kickId: b.kickId, t: 0 };
     this.msg(`${SP_NAMES[type]} - ${team === 0 ? '블루' : '레드'}`, 1.4);
@@ -655,37 +693,14 @@ export class Game {
     }
   }
 
-  // 공이 터치라인·골라인 밖으로 나갔는지 (골은 checkGoal에서 먼저 처리)
-  checkOut() {
-    const b = this.ball, p = b.pos;
-    if (b.keeper || this.freezeT > 0) return;
-    const last = b.lastTouch ? b.lastTouch.team : 0;
-    if (Math.abs(p.z) > HALF_W + BALL_R) {
-      const team = 1 - last, sz = Math.sign(p.z);
-      const spot = new V3(clamp(p.x, -HALF_L + 1, HALF_L - 1), 0, sz * (HALF_W - 0.2));
-      this.msg(`아웃 - ${team === 0 ? '블루' : '레드'} 스로인`, 1.0);
-      this.freeze(1.0, 'out', () => this.setupSetPiece('throw', team, spot));
-    } else if (Math.abs(p.x) > HALF_L + BALL_R) {
-      const s = Math.sign(p.x), defending = s === 1 ? 1 : 0;   // +x 골대는 레드가 지킴
-      if (last === defending) {
-        const team = 1 - defending;
-        const spot = new V3(s * (HALF_L - 0.4), 0, (Math.sign(p.z) || 1) * (HALF_W - 0.4));
-        this.msg(`${team === 0 ? '블루' : '레드'} 코너킥`, 1.0);
-        this.freeze(1.0, 'out', () => this.setupSetPiece('corner', team, spot));
-      } else {
-        this.msg(`${defending === 0 ? '블루' : '레드'} 골킥`, 1.0);
-        this.freeze(1.0, 'out', () => this.setupSetPiece('goalkick', defending, null));
-      }
-    }
-  }
-
   // ---------- 축구 규칙: 오프사이드 ----------
   // 패스(킥·헤딩) 순간, 상대 진영에서 공과 뒤에서 두 번째 수비수보다 앞에 있던 같은 팀 선수를 기록
   markOffside(kicker) {
+    if (this.teamSize < 2) { this.offside = null; return; }   // 1대1은 오프사이드 없음
     const sp = this.setPiece;
     if (sp && ['throw', 'corner', 'goalkick'].includes(sp.type)) { this.offside = null; return; }   // 이 재개에서는 오프사이드 없음
     const d = kicker.dir;
-    const defs = [...this.players.filter(o => o.team !== kicker.team).map(o => o.pos.x * d), this.keepers[1 - kicker.team].pos.x * d].sort((a, c) => c - a);
+    const defs = [...this.players.filter(o => o.team !== kicker.team).map(o => o.pos.x * d), ...this.keepers.filter(k => k.team !== kicker.team).map(k => k.pos.x * d)].sort((a, c) => c - a);
     const second = defs[1] ?? -1e9, bx = this.ball.pos.x * d;
     const ids = new Set();
     for (const q of this.players) {
@@ -731,10 +746,8 @@ export class Game {
     if (k.turned > 90 * DEG) err += 3;
     const a = gauss() * err * DEG, c = Math.cos(a), s = Math.sin(a);
     const dx = _v.x * c - _v.z * s, dz = _v.x * s + _v.z * c;
-    let vh, vy, spin = 0;
-    if (k.type === 'ground') { vh = 4 + k.power * 16; vy = 0.15; if (k.power > 0.9) vy += rand(1, 3); }
-    else if (k.type === 'lob') { vh = 6 + k.power * 14; vy = 3.5 + k.power * 7.5; spin = 18; }
-    else { vh = 12 + k.power * 20; vy = 0.6 + k.power * 2.4; if (k.power > 0.9) vy += rand(1.5, 4); }
+    let { vh, vy, spin } = kickVel(k.type, k.power);
+    if (k.power > 0.9) vy += k.type === 'ground' ? rand(1, 3) : k.type === 'shot' ? rand(1.5, 4) : 0;
     this.markOffside(p);
     b.pos.set(p.pos.x + dx * 0.55, BALL_R + 0.01, p.pos.z + dz * 0.55);
     b.release(new V3(dx * vh, vy, dz * vh), p);
@@ -809,7 +822,7 @@ export class Game {
       this.msg(this.score[0] === this.score[1] ? '경기 종료 - 무승부' : `경기 종료 - ${this.score[0] > this.score[1] ? '블루' : '레드'} 승리`, 9999);
       return;
     }
-    for (const p of this.players) if (!p.isHuman) p.brain.update(dt);
+    if (this.ai) for (const p of this.players) if (!p.isHuman) p.brain.update(dt);
     for (const p of this.players) p.update(dt);
     for (const k of this.keepers) k.update(dt);
     this.updateSetPiece(dt);
@@ -819,7 +832,7 @@ export class Game {
     if (this.freezeT > 0) return;    // 파울이 선언되면 이번 틱은 여기서 멈춤
     this.handleHeaders(); this.handleCapture(); this.handleBodyBlocks();
     if (this.freezeT > 0) return;    // 오프사이드
-    this.checkGoal(); this.checkOut();
+    this.checkGoal();   // 라인 아웃 없음: 공은 바깥 벽에 튕겨 계속 진행
   }
 
   syncOwnedBall(dt) {
@@ -945,16 +958,16 @@ export class Game {
   // ---------- 네트워크용 ----------
   // 사람을 빈 자리에 배치 (사람이 적은 팀 우선). 자리가 없으면 null
   addHuman(humanId, name, preferTeam = null) {
-    const humans = t => this.players.filter(p => p.team === t && p.isHuman).length;
+    const humans = t => this.slots.filter(p => p.team === t && p.isHuman).length;
     const order = preferTeam !== null ? [preferTeam, 1 - preferTeam] : humans(0) <= humans(1) ? [0, 1] : [1, 0];
     for (const t of order) {
-      const p = this.players.filter(q => q.team === t && !q.isHuman).sort((a, b) => a.slot - b.slot)[0];
+      const p = this.slots.filter(q => q.team === t && !q.isHuman).sort((a, b) => a.slot - b.slot)[0];
       if (p) { p.humanId = humanId; p.name = name; p.input.run = false; p.input.slow = false; p.charge = null; return p; }
     }
     return null;
   }
   removeHuman(humanId) {
-    const p = this.players.find(q => q.humanId === humanId);
+    const p = this.slots.find(q => q.humanId === humanId);
     if (p) { p.humanId = null; p.name = ''; p.charge = null; p.input.run = false; p.input.slow = false; }
   }
 
@@ -967,13 +980,13 @@ export class Game {
       o: b.owner ? b.owner.id : -1, k: b.keeper ? b.keeper.team : -1,
       sp: this.setPiece ? [SP_TYPES.indexOf(this.setPiece.type), this.setPiece.team, this.setPiece.taker.id] : 0,
       b: [r(b.pos.x), r(b.pos.y), r(b.pos.z), r(b.vel.x), r(b.vel.y), r(b.vel.z)],
-      p: this.players.map(p => [r(p.pos.x), r(p.pos.z), r(p.y), r(p.yaw), r(p.vel.x), r(p.vel.z),
+      p: this.slots.map(p => [r(p.pos.x), r(p.pos.z), r(p.y), r(p.yaw), r(p.vel.x), r(p.vel.z),
         STATES.indexOf(p.state), r(p.stamina), p.charge ? KICKS.indexOf(p.charge.type) : 0, r(p.chargePower()),
         p.kickAnim > 0 ? 1 : 0, p.headerT > 0 ? 1 : 0, p.leanT > 0 ? 1 : 0]),
       g: this.keepers.map(k => [r(k.pos.x), r(k.pos.z), r(k.yaw), KSTATES.indexOf(k.state), r(k.diveTarget.z - k.pos.z), r(k.diveY)]),
     };
   }
   roster() {
-    return { t: 'roster', teamSize: this.teamSize, players: this.players.map(p => ({ id: p.id, team: p.team, human: p.isHuman, name: p.name })) };
+    return { t: 'roster', teamSize: this.teamSize, ai: this.ai, players: this.slots.map(p => ({ id: p.id, team: p.team, human: p.isHuman, name: p.name })) };
   }
 }

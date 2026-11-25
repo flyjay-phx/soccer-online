@@ -70,8 +70,8 @@
   </div>
   <div id="help" class="hud">
     <div><b>마우스 커서</b>이동·패스·슛 방향 (자동으로 걸음)</div>
-    <div><b>왼쪽 클릭</b>길게 눌렀다 떼기: 로빙패스</div>
-    <div><b>오른쪽 클릭</b>길게 눌렀다 떼기: 땅볼패스</div>
+    <div><b>왼쪽 클릭</b>짧게: 커서까지 짧은 로빙 / 길게: 게이지 로빙</div>
+    <div><b>오른쪽 클릭</b>짧게: 커서까지 짧은 패스 / 길게: 게이지 패스</div>
     <div><b>Space</b>공 있을 때 슛(길게) / 공중볼 헤딩</div>
     <div><b>Shift</b>달리기 &nbsp; <b style="min-width:auto">A</b> 천천히 걷기</div>
     <div><b>Z / X</b>슬라이딩 태클 / 커트</div>
@@ -84,7 +84,7 @@
   <div id="joinView" class="overlay">
     <form class="card" id="joinForm">
       <h1>3D 축구 온라인</h1>
-      <p>3대3 경기입니다. 비어 있는 자리는 AI가 채우고, 골키퍼는 양쪽 모두 AI입니다.</p>
+      <p>1대1 경기입니다. AI와 골키퍼 없이 사람끼리 겨룹니다. 공이 라인 밖으로 나가도 멈추지 않고 벽에 튕겨 계속 진행됩니다.</p>
       <div class="field"><label for="nameInput">내 이름</label><input id="nameInput" maxlength="12" placeholder="예: 철수" required></div>
       <div class="field"><label for="roomInput">방 이름 (친구와 같은 방 이름을 쓰면 같이 경기)</label><input id="roomInput" maxlength="20" value="main"></div>
       <div class="row"><button type="submit">입장</button></div>
@@ -96,7 +96,7 @@
     <div class="card">
       <h1 id="lobbyTitle">대기실</h1>
       <p id="result"></p>
-      <p id="lobbyInfo">친구가 들어오면 사람이 AI 자리를 대신합니다. 아무나 경기 시작을 누르면 시작합니다.</p>
+      <p id="lobbyInfo">친구가 같은 방에 들어오면 상대 팀으로 들어옵니다. 혼자서도 연습할 수 있고, 아무나 경기 시작을 누르면 시작합니다.</p>
       <div class="teams">
         <div class="team b"><h3>블루 (오른쪽 공격)</h3><ul id="teamB"></ul></div>
         <div class="team r"><h3>레드 (왼쪽 공격)</h3><ul id="teamR"></ul></div>

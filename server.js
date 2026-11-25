@@ -12,7 +12,9 @@ import { fileURLToPath } from 'node:url';
 import { Game, DT, V3, clamp, ARENA_X, ARENA_Z } from './public/sim.js';
 
 const PORT = Number(process.env.PORT) || 8080;
-const TEAM_SIZE = Number(process.env.TEAM_SIZE) || 3;
+const TEAM_SIZE = Number(process.env.TEAM_SIZE) || 1;          // 기본 1대1
+const AI = process.env.AI === '1';                               // 빈 자리 AI (기본 끔)
+const KEEPERS = process.env.KEEPERS === '1';                     // AI 골키퍼 (기본 끔)
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 
@@ -91,7 +93,7 @@ function getRoom(code) {
 
 class Room {
   constructor(code) {
-    this.code = code; this.game = new Game(TEAM_SIZE); this.clients = new Map();
+    this.code = code; this.game = new Game(TEAM_SIZE, { ai: AI, keepers: KEEPERS }); this.clients = new Map();
     this.last = process.hrtime.bigint(); this.acc = 0; this.tick = 0;
     this.timer = setInterval(() => this.loop(), 1000 / 120);
     console.log(`[방 생성] ${code}`);
@@ -161,5 +163,5 @@ class Room {
 }
 
 server.listen(PORT, () => {
-  console.log(`축구 온라인 서버 실행 중: http://localhost:${PORT}  (팀당 ${TEAM_SIZE}명, 빈자리는 AI)`);
+  console.log(`축구 온라인 서버 실행 중: http://localhost:${PORT}  (팀당 ${TEAM_SIZE}명, AI ${AI ? "켬" : "끔"}, 골키퍼 ${KEEPERS ? "있음" : "없음"})`);
 });
