@@ -31,6 +31,8 @@
     padding: 1px 12px; font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; display: flex; gap: 10px; }
   #radar .clock .half { color: #ffd166; } 
   #mini { display: block; width: 210px; height: 136px; border: 2px solid rgba(255,255,255,.25); border-radius: 6px; background: #2c6b34; }
+  #radar.side { left: auto; right: 12px; bottom: 50%; transform: translateY(50%); }
+  #radar.side #mini { width: 136px; height: 210px; }
   #cam { top: 12px; right: 12px; background: var(--panel); padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--muted); text-align: right; line-height: 1.5; }
   #status { top: 64px; left: 12px; background: var(--panel); padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--muted); line-height: 1.5; }
   #msg { top: 30%; left: 50%; transform: translate(-50%, -50%); font-size: 40px; font-weight: 800;
@@ -93,10 +95,10 @@
     <div><b>마우스 커서</b>이동·패스·슛 방향 (자동으로 걸음)</div>
     <div><b>왼쪽 클릭</b>짧게: 커서까지 짧은 로빙 / 길게: 게이지 로빙</div>
     <div><b>오른쪽 클릭</b>짧게: 커서까지 짧은 패스 / 길게: 게이지 패스</div>
-    <div><b>Space</b>공 있을 때 슛(길게) / 공중볼 헤딩</div>
+    <div><b>Space</b>공 있을 때 슛(길게) / 날아오는 공: 헤딩슛·발리슛·원터치슛</div>
     <div><b>Shift</b>달리기 &nbsp; <b style="min-width:auto">A</b> 천천히 걷기</div>
     <div><b>Z / X</b>슬라이딩 태클 / 커트</div>
-    <div><b>C</b>점프 (공 있을 때·없을 때 모두, 높은 공 받기)</div>
+    <div><b>C</b>점프 (슬라이딩 태클 피하기)</div>
     <div><b>V</b>몸싸움 &nbsp; <b style="min-width:auto">Q / E</b> 개인기</div>
     <div><b>F1 ~ F5</b>카메라 (높은·가까운 쿼터뷰, 측면, 탑뷰, 골대 뒤) &nbsp; <b style="min-width:auto">Tab</b> 팀·초대 &nbsp; <b style="min-width:auto">H</b> 도움말</div>
   </div>
@@ -105,7 +107,7 @@
   <div id="joinView" class="overlay">
     <form class="card" id="joinForm">
       <h1>3D 축구 온라인</h1>
-      <p>1대1 경기입니다. AI와 골키퍼 없이 사람끼리 겨룹니다. 공이 라인 밖으로 나가도 멈추지 않고 벽에 튕겨 계속 진행됩니다.</p>
+      <p>1대1 경기입니다. 양쪽 골대에 AI 골키퍼가 있고, 공을 잡으면 우리 팀에게 바로 패스합니다. 옆줄 밖으로 나간 공은 벽에 튕기고, 골라인 밖으로 나가면 골킥이나 코너킥입니다.</p>
       <div class="field"><label for="nameInput">내 이름</label><input id="nameInput" maxlength="12" placeholder="예: 철수" required></div>
       <div class="field"><label for="roomInput">방 이름 (친구와 같은 방 이름을 쓰면 같이 경기)</label><input id="roomInput" maxlength="20" value="main"></div>
       <div class="row"><button type="submit">입장</button></div>

@@ -264,10 +264,10 @@ function interpolate(now) {
     const pa = A.p[i] || pb;
     if (i === net.you) {   // 내 선수: 최신 상태 + 속도로 앞당김
       const pl = L.p[i], age = Math.min(0.1, (now - latest.at) / 1000);
-      return { x: pl[0] + pl[4] * age, z: pl[1] + pl[5] * age, y: pl[2], yaw: pl[3], vx: pl[4], vz: pl[5], st: pl[6], stam: pl[7], ck: pl[8], cp: pl[9], kick: pl[10], head: pl[11], lean: pl[12] };
+      return { x: pl[0] + pl[4] * age, z: pl[1] + pl[5] * age, y: pl[2], yaw: pl[3], vx: pl[4], vz: pl[5], st: pl[6], stam: pl[7], ck: pl[8], cp: pl[9], kick: pl[10], head: pl[11], lean: pl[12], sf: pl[13] || 0 };
     }
     return { x: lerp(pa[0], pb[0], t), z: lerp(pa[1], pb[1], t), y: lerp(pa[2], pb[2], t), yaw: lerpAng(pa[3], pb[3], t), vx: pb[4], vz: pb[5],
-      st: pb[6], stam: pb[7], ck: pb[8], cp: pb[9], kick: pb[10], head: pb[11], lean: pb[12] };
+      st: pb[6], stam: pb[7], ck: pb[8], cp: pb[9], kick: pb[10], head: pb[11], lean: pb[12], sf: pb[13] || 0 };
   });
   view.keepers = B.g.map((kb, i) => { const ka = A.g[i] || kb; return { x: lerp(ka[0], kb[0], t), z: lerp(ka[1], kb[1], t), yaw: lerpAng(ka[2], kb[2], t), st: kb[3], dz: kb[4], dy: kb[5] }; });
   if (L.o === net.you && L.o >= 0) {   // 내가 공을 가지면 공도 내 선수 기준으로
@@ -313,10 +313,20 @@ const rollAxis = new THREE.Vector3();
 const KICK_NAMES = { lob: '로빙패스', ground: '땅볼패스', shot: '슛' };
 const KICK_COLORS = { lob: 0x7fd3ff, ground: 0x9cff8a, shot: 0xffd166 };
 
-// ---------- 미니맵 (하단 가운데) ----------
+// ---------- 미니맵 ----------
+// F1~F4(옆에서 보는 화면): 가로로 하단 가운데. F5(골대 뒤): 화면처럼 공격 방향이 위로 오게 세로로 돌려 오른쪽에 둠
 const mini = $('mini'), mctx = mini.getContext('2d');
+const MW = 420, MH = 272;   // 가로 기준 크기
 function drawMini() {
-  const W = mini.width, H = mini.height, pad = 16, sx = (W - pad * 2) / FIELD_L, sz = (H - pad * 2) / FIELD_W;
+  const side = camMode === 4, d = roster[net.you]?.team === 1 ? -1 : 1;
+  const cw = side ? MH : MW, ch = side ? MW : MH;
+  if (mini.width !== cw || mini.height !== ch) { mini.width = cw; mini.height = ch; }
+  $('radar').classList.toggle('side', side);
+  // 가로 좌표 (px, py)를 세로로 돌림: 공격 방향(d)이 위, 그 오른쪽이 화면 오른쪽
+  if (!side) mctx.setTransform(1, 0, 0, 1, 0, 0);
+  else if (d === 1) mctx.setTransform(0, -1, 1, 0, 0, ch);
+  else mctx.setTransform(0, 1, -1, 0, cw, 0);
+  const W = MW, H = MH, pad = 16, sx = (W - pad * 2) / FIELD_L, sz = (H - pad * 2) / FIELD_W;
   const X = x => pad + (x + HALF_L) * sx, Z = z => pad + (z + HALF_W) * sz;
   mctx.fillStyle = '#2c6b34'; mctx.fillRect(0, 0, W, H);
   mctx.fillStyle = '#327a3b';

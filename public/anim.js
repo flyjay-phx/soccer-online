@@ -197,10 +197,28 @@ export function animatePlayer(m, p, st, dt) {
       t.hipR = 1.05; t.kneeR = -0.25; t.ankR = -0.3; t.hipL = -0.2; t.kneeL = -0.3;
       t.pvY = -0.14; t.spZ = -0.32; t.shL = 0.7; t.abL = 0.6; t.shR = -0.5; t.abR = 0.5; rate = 26;
       break;
-    case 'stun':       // 태클 맞고 넘어짐: 뒤로 쓰러져 팔다리를 벌림
-      t.bdZ = 1.45; t.bdY = -0.8; t.bdX = 0.1;
-      t.hipL = 0.75; t.kneeL = -1.7; t.hipR = 0.1; t.kneeR = -0.1;
-      t.shL = 1.6; t.abL = 1.0; t.shR = 1.9; t.abR = 0.9; t.elL = 0.4; t.elR = 0.3; t.nkZ = -0.3; rate = 9;
+    case 'stun':       // 깊은 태클에 넘어짐 (1.5초): 처음엔 다리가 걸려 쓰러져 누워 있다가, 남은 시간 35% 아래면 무릎 짚고 일어남
+      if (p.sf > 0.35) {
+        const fall = p.sf > 0.85;                     // 막 걸린 순간: 다리가 쓸려 몸이 뜨며 넘어가는 중
+        t.bdZ = fall ? 0.9 : 1.45; t.bdY = fall ? -0.45 : -0.8; t.bdX = 0.1;
+        t.hipL = fall ? -0.3 : 0.75; t.kneeL = fall ? -0.4 : -1.7; t.hipR = fall ? 0.9 : 0.1; t.kneeR = -0.1;
+        t.shL = 1.6; t.abL = 1.0; t.shR = 1.9; t.abR = 0.9; t.elL = 0.4; t.elR = 0.3; t.nkZ = -0.3; rate = fall ? 14 : 9;
+      } else {
+        t.pvY = -0.42; t.hipL = 1.4; t.kneeL = -1.4; t.hipR = -0.2; t.kneeR = -1.9; t.ankR = 0.6; t.ankL = 0.6;
+        t.spZ = -0.45; t.shL = t.shR = 0.5; t.elL = t.elR = 0.6; t.abL = t.abR = 0.3; rate = 6;
+        if (p.sf < 0.12) { t.pvY = -0.15; t.hipL = 0.5; t.kneeL = -0.7; t.kneeR = -0.8; t.hipR = 0.3; t.spZ = -0.25; }   // 거의 다 일어남
+      }
+      break;
+    case 'trip':       // 숏태클(커트)에 걸림 (1초): 발이 걸려 앞으로 휘청, 팔을 허우적대다 중심 잡기
+      if (p.sf > 0.4) {
+        const w = Math.sin(performance.now() / 70);
+        t.spZ = -0.6; t.bdZ = -0.25; t.pvY = -0.2; t.nkZ = 0.2;
+        t.hipL = 0.7; t.kneeL = -0.9; t.hipR = -0.55; t.kneeR = -0.6; t.ankR = 0.4;
+        t.shL = 1.2 + w * 0.5; t.shR = 0.3 - w * 0.5; t.abL = 0.9; t.abR = 1.1; t.elL = t.elR = 0.5; rate = 16;
+      } else {
+        t.spZ = -0.3; t.pvY = -0.12; t.hipL = t.hipR = 0.35; t.kneeL = t.kneeR = -0.55;
+        t.shL = t.shR = 0.3; t.abL = t.abR = 0.6; t.elL = t.elR = 0.4; rate = 8;
+      }
       break;
     case 'recover':    // 일어나기: 한쪽 무릎을 꿇었다 일어서는 자세
       t.pvY = -0.42; t.hipL = 1.4; t.kneeL = -1.4; t.hipR = -0.2; t.kneeR = -1.9; t.ankR = 0.6; t.ankL = 0.6;
@@ -234,6 +252,20 @@ export function animateKeeper(m, k, st, dt) {
     t.hipL = 0.15; t.hipR = -0.1; t.kneeL = -0.3; t.kneeR = -0.15; t.spZ = 0.1; rate = 16;
   } else if (st === 'hold') {                 // 공 잡고 있음: 가슴에 끌어안기
     t.shL = t.shR = 0.85; t.abL = t.abR = 0.05; t.elL = t.elR = 1.75; t.spZ = -0.12; rate = 12;
+  } else if (st === 'setup') {                // 골킥 준비: 똑바로 서서 걷거나 달려옴 (기본 걸음새)
+    rate = 16;
+  }
+  // 골킥: 차는 순간 'kick' 상태가 되면 뒤로 들었다가 길게 차고 따라 나감
+  if (st === 'kick' && ud.prevKst !== 'kick') ud.kickT = 0;
+  ud.prevKst = st;
+  if (st === 'kick' && ud.kickT >= 0) {
+    ud.kickT += dt;
+    const q = ud.kickT;
+    if (q < 0.08) { t.hipR = -0.8; t.kneeR = -1.6; }
+    else if (q < 0.25) { t.hipR = 1.45; t.kneeR = -0.1; t.ankR = -0.35; }
+    else { t.hipR = 1.1; t.kneeR = -0.3; }
+    t.hipL = 0.15; t.kneeL = -0.3; t.pvY = -0.06; t.spZ = q < 0.08 ? 0.15 : -0.22; t.spY = q < 0.08 ? -0.35 : 0.3;
+    t.shL = 0.8; t.abL = 0.9; t.shR = -0.5; t.abR = 0.6; rate = 30;
   }
   applyJoints(ud, t, dt, rate);
 }

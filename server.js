@@ -14,7 +14,7 @@ import { Game, DT, V3, clamp, ARENA_X, ARENA_Z } from './public/sim.js';
 const PORT = Number(process.env.PORT) || 8080;
 const TEAM_SIZE = Number(process.env.TEAM_SIZE) || 1;          // 기본 1대1
 const AI = process.env.AI === '1';                               // 빈 자리 AI (기본 끔)
-const KEEPERS = process.env.KEEPERS === '1';                     // AI 골키퍼 (기본 끔)
+const KEEPERS = process.env.KEEPERS !== '0';                     // AI 골키퍼 (기본 켬, KEEPERS=0이면 끔)
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 

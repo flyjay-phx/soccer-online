@@ -14,8 +14,8 @@ export const BALL_R = 0.11, POST_R = 0.06;
 export const G = 9.81;
 export const MATCH_TIME = 180;
 export const DEG = Math.PI / 180;
-export const STATES = ['normal', 'slide', 'recover', 'stun', 'skill', 'cut'];
-export const KSTATES = ['guard', 'dive', 'hold', 'recover'];
+export const STATES = ['normal', 'slide', 'recover', 'stun', 'skill', 'cut', 'trip'];   // trip: 숏태클(커트)에 걸려 휘청
+export const KSTATES = ['guard', 'dive', 'hold', 'recover', 'setup', 'kick'];          // setup: 골킥 준비, kick: 차는 중
 export const KICKS = [null, 'lob', 'ground', 'shot'];
 // 세트피스 (축구 규칙에 따른 재개)
 export const SP_TYPES = ['kickoff', 'throw', 'corner', 'goalkick', 'free', 'penalty'];
@@ -23,7 +23,12 @@ export const SP_NAMES = { kickoff: '킥오프', throw: '스로인', corner: '코
 export const BOX_DEPTH = 8, BOX_HALF_W = 8, PEN_SPOT = 6, SP_DIST = 5;   // 페널티 박스, 페널티 지점, 상대가 떨어져야 할 거리
 
 const SPD = { slow: 1.8, walk: 3.4, run: 6.8, runBall: 6.0, tired: 4.6 };
-const PHYS = { drag: 0.012, magnus: 0.003, restitution: 0.58, bounceFriction: 0.86, rolling: 2.4 };
+// 공 물리 상수
+// dragLo/dragHi: 느릴 때·빠를 때 공기저항 (빠르면 공 표면 공기 흐름이 바뀌어 저항이 줄어듦)
+// muBounce: 튈 때 잔디 마찰, muSlide: 미끄러질 때 잔디 마찰, rolling: 구를 때 감속(m/s²)
+const PHYS = { dragLo: 0.0135, dragHi: 0.0095, magnus: 0.003, restitution: 0.58, muBounce: 0.45, muSlide: 0.32, rolling: 2.2 };
+const GA_DEPTH = 2.5, GA_Z = 2;   // 골 에어리어 깊이, 골킥 공 놓는 위치(옆으로)
+const mix = (a, b, t) => a + (b - a) * t;
 
 // 팀 진형 (자기 팀 공격 방향 기준 x, z). 슬롯 0은 사람이 먼저 들어가는 자리
 const FORMATION = [
@@ -62,31 +67,70 @@ class Ball {
   constructor() {
     this.pos = new V3(0, BALL_R, 0); this.prev = this.pos.clone();
     this.vel = new V3(); this.spin = new V3();
-    this.owner = null; this.keeper = null; this.lastTouch = null; this.kickId = 0;
+    this.owner = null; this.keeper = null; this.lastTouch = null; this.kickId = 0; this.knuckle = 0; this.bounces = 0;
   }
   get airborne() { return this.pos.y > BALL_R + 0.03; }
   speed() { return this.vel.length(); }
-  release(vel, by) { this.owner = null; this.keeper = null; this.vel.copy(vel); this.spin.set(0, 0, 0); this.lastTouch = by; this.kickId++; }
+  release(vel, by) { this.owner = null; this.keeper = null; this.vel.copy(vel); this.spin.set(0, 0, 0); this.lastTouch = by; this.kickId++; this.knuckle = Math.random() * 6; this.bounces = 0; }
+  // 빠른 공은 한 틱을 잘게 나눠 계산 (골대·그물·벽을 뚫고 지나가지 않게)
   step(dt) {
+    const n = clamp(Math.ceil(this.vel.length() * dt / 0.06), 1, 10), h = dt / n;
+    for (let i = 0; i < n; i++) this.substep(h);
+  }
+  substep(dt) {
     this.prev.copy(this.pos);
-    const v = this.vel;
+    const v = this.vel, w = this.spin;
     v.y -= G * dt;
     const sp = v.length();
-    if (sp > 0) v.addScaledVector(v, -PHYS.drag * sp * dt);
-    if (this.airborne && this.spin.lengthSq() > 0) { _v.crossVectors(this.spin, v).multiplyScalar(PHYS.magnus * dt); v.add(_v); }
-    this.spin.multiplyScalar(1 - 0.4 * dt);
+    if (sp > 0) v.addScaledVector(v, -mix(PHYS.dragLo, PHYS.dragHi, clamp((sp - 12) / 10, 0, 1)) * sp * dt);
+    if (this.airborne) {
+      if (w.lengthSq() > 0) { _v.crossVectors(w, v).multiplyScalar(PHYS.magnus * dt); v.add(_v); }   // 마그누스: 회전 방향으로 휘어짐
+      // 너클: 회전 거의 없는 강슛은 공기 흐름이 불안정해 좌우로 살짝 흔들림
+      const hs = hlen(v);
+      if (sp > 22 && w.lengthSq() < 16 && hs > 1) {
+        this.knuckle += dt * 7;
+        const a = Math.sin(this.knuckle) * 2.2 * dt, px = -v.z / hs, pz = v.x / hs;
+        v.x += px * a; v.z += pz * a;
+      }
+      w.multiplyScalar(Math.exp(-0.25 * dt));
+    }
     this.pos.addScaledVector(v, dt);
     if (this.pos.y < BALL_R) {
       this.pos.y = BALL_R;
-      if (v.y < -0.8) { v.y = -v.y * PHYS.restitution; v.x *= PHYS.bounceFriction; v.z *= PHYS.bounceFriction; this.spin.multiplyScalar(0.5); }
-      else v.y = 0;
+      if (v.y < -0.8) this.bounce(); else v.y = 0;
     }
-    if (this.pos.y <= BALL_R + 1e-4 && v.y === 0) {
-      const h = hlen(v);
-      if (h > 0) { const dec = Math.min(h, PHYS.rolling * dt); v.x -= v.x / h * dec; v.z -= v.z / h * dec; }
-    }
+    if (this.pos.y <= BALL_R + 1e-4 && v.y === 0) this.roll(dt);
     collideGoals(this); collideArena(this);
   }
+  // 땅에 튈 때: 접점이 미끄러지는 만큼 마찰이 속도와 회전을 바꿈 (백스핀은 멈칫, 탑스핀은 앞으로 튐)
+  bounce() {
+    const v = this.vel, w = this.spin, R = BALL_R, e = PHYS.restitution;
+    const vn = -v.y; this.bounces++;
+    v.y = vn * e;
+    const sx = v.x + w.z * R, sz = v.z - w.x * R, sl = Math.hypot(sx, sz);
+    if (sl > 1e-4) {
+      const dv = Math.min(PHYS.muBounce * (1 + e) * vn, sl * 2 / 7);
+      const dx = -sx / sl * dv, dz = -sz / sl * dv;
+      v.x += dx; v.z += dz; w.x += 2.5 / R * -dz; w.z += 2.5 / R * dx;
+    }
+    w.y *= 0.7;
+  }
+  // 땅에서: 미끄러지는 동안은 운동마찰로 굴러가는 상태가 되고, 그 다음엔 구름 저항으로 멈춤
+  roll(dt) {
+    const v = this.vel, w = this.spin, R = BALL_R;
+    const sx = v.x + w.z * R, sz = v.z - w.x * R, sl = Math.hypot(sx, sz);
+    if (sl > 0.05) {
+      const dv = Math.min(PHYS.muSlide * G * dt, sl * 2 / 7);
+      const dx = -sx / sl * dv, dz = -sz / sl * dv;
+      v.x += dx; v.z += dz; w.x += 2.5 / R * -dz; w.z += 2.5 / R * dx;
+    } else {
+      const h = hlen(v);
+      if (h > 0) { const dec = Math.min(h, PHYS.rolling * dt); v.x -= v.x / h * dec; v.z -= v.z / h * dec; }
+      w.set(v.z / R, w.y * Math.exp(-3 * dt), -v.x / R);
+    }
+  }
+  // 굴러가는 상태에 맞는 회전 (패스·드리블용)
+  setRolling(k = 1) { this.spin.set(this.vel.z / BALL_R * k, 0, -this.vel.x / BALL_R * k); }
 }
 function bounceOff(b, nx, ny, nz, e) {
   const vn = b.vel.x * nx + b.vel.y * ny + b.vel.z * nz;
@@ -138,19 +182,33 @@ function kickVel(type, power) {
 function kickReach(type, power) {
   const b = new Ball(), k = kickVel(type, power);
   b.pos.set(-20, BALL_R + 0.01, 0); b.vel.set(k.vh, k.vy, 0); b.spin.set(0, 0, k.spin);
+  if (type === 'ground') b.setRolling(0.7);
   let flew = false;
-  for (let i = 0; i < 900; i++) {
+  for (let i = 0; i < 1500; i++) {
     b.step(DT);
     if (b.pos.y > BALL_R + 0.05) flew = true;
-    if (type === 'lob' && flew && b.pos.y <= BALL_R + 1e-3) break;            // 로빙: 첫 착지 지점
+    if (type === 'lob' && flew && b.bounces > 0) break;                         // 로빙: 첫 착지 지점
     if (type === 'ground' && hlen(b.vel) < 3) break;                         // 땅볼: 받기 좋은 속도(3m/s)로 도착
   }
   return b.pos.x + 20;
 }
+// 골키퍼 골킥·패스용: 거리 d로 보내는 파워 (최대 거리 제한 없음)
+function powerFor(type, d) { return quickPower(type, d, 60); }
+// 키퍼 스로: 1.9m 높이에서 위로 vy로 던질 때 dist에 처음 떨어지는 수평 속도 (이분 탐색)
+function throwSpeed(vy, dist) {
+  let lo = 2, hi = 28;
+  for (let it = 0; it < 14; it++) {
+    const mid = (lo + hi) / 2, b = new Ball();
+    b.pos.set(0, 1.9, 0); b.vel.set(mid, vy, 0);
+    for (let i = 0; i < 600 && b.bounces === 0; i++) b.step(DT);
+    if (b.pos.x < dist) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
 const REACH = {};
-function quickPower(type, dist) {
+function quickPower(type, dist, max = TAP_MAX[type]) {
   if (!REACH[type]) REACH[type] = Array.from({ length: 51 }, (_, i) => kickReach(type, i / 50));
-  const tb = REACH[type], d = Math.min(dist, TAP_MAX[type]);
+  const tb = REACH[type], d = Math.min(dist, max);
   if (d <= tb[0]) return 0;
   for (let i = 1; i < tb.length; i++) if (tb[i] >= d) return (i - 1 + (d - tb[i - 1]) / (tb[i] - tb[i - 1])) / 50;
   return 1;
@@ -168,7 +226,7 @@ class Player {
     this.state = 'normal'; this.stateT = 0;
     this.cd = { cut: 0, slide: 0, shoulder: 0, skill: 0, noTouch: 0 };
     this.charge = null; this.pendingKick = null;
-    this.headerT = 0; this.kickAnim = 0; this.leanT = 0;
+    this.headerT = 0; this.kickAnim = 0; this.leanT = 0; this.headAnim = 0; this.stateT0 = 1;
     this.offset = 0.5; this.touchT = 0; this.slide = null; this.skillDir = new V3();
     this.input = { target: new V3(), run: false, slow: false };
     this.actions = [];
@@ -180,10 +238,10 @@ class Player {
   setYaw(y) { this.yaw = wrap(y); this.face.set(Math.cos(this.yaw), 0, Math.sin(this.yaw)); }
   turnTo(y, max) { this.setYaw(this.yaw + clamp(wrap(y - this.yaw), -max, max)); }
   setState(s, t) {
-    this.state = s; this.stateT = t;
-    if (s === 'stun' || s === 'recover') {
+    this.state = s; this.stateT = t; this.stateT0 = t;
+    if (s === 'stun' || s === 'recover' || s === 'trip') {
       this.charge = null; this.pendingKick = null;
-      if (s === 'stun' && this.hasBall) this.game.ball.release(new V3(this.face.x * 2, 0.3, this.face.z * 2), this);
+      if ((s === 'stun' || s === 'trip') && this.hasBall) this.game.ball.release(new V3(this.face.x * 2, 0.3, this.face.z * 2), this);
     }
   }
   startCharge(type) { if (!this.charge && this.state === 'normal') this.charge = { type, t: 0 }; }
@@ -201,10 +259,10 @@ class Player {
     const yaw = Math.atan2(t.z - this.pos.z, t.x - this.pos.x);
     this.pendingKick = { type: c.type, power, target: t.clone(), yaw, turned: Math.abs(wrap(yaw - this.yaw)), t: 0 };
   }
-  // 스페이스: 공이 있으면 슛 충전, 없으면 헤딩
+  // 스페이스: 공이 있으면 슛 충전, 없으면 날아오는 공을 바로 슛 (높이에 따라 헤딩슛·발리슛·원터치슛)
   spaceDown() {
     if (this.isTaker('throw')) return;   // 스로인은 슛 불가 (클릭 패스로 던짐)
-    if (this.hasBall) this.startCharge('shot'); else this.actions.push('header');
+    if (this.hasBall) this.startCharge('shot'); else this.actions.push('airshot');
   }
   // 세트피스 키커인지 (type을 주면 그 종류일 때만)
   isTaker(type) { const sp = this.game.setPiece; return !!sp && sp.taker === this && (!type || sp.type === type); }
@@ -212,7 +270,7 @@ class Player {
   doAction(a) {
     const g = this.game, ball = g.ball, ground = this.y === 0;
     switch (a) {
-      case 'jump': if (ground) { this.vy = 4.3; this.stamina = Math.max(0, this.stamina - 0.03); } break;
+      case 'jump': if (ground) { this.vy = 3.3; this.stamina = Math.max(0, this.stamina - 0.03); } break;   // 태클 피하기 점프 (최고 약 0.55m)
       case 'cut': if (this.cd.cut === 0 && ground) { this.cd.cut = 0.9; this.setState('cut', 0.22); g.tryCut(this); } break;
       case 'slide':
         if (this.cd.slide === 0 && ground && !this.hasBall) {
@@ -232,8 +290,8 @@ class Player {
           this.skillDir.copy(this.face); this.setState('skill', 0.28); this.offset = 0.45;
         }
         break;
-      case 'header': {
-        this.headerT = 0.5;
+      case 'header': case 'airshot': {
+        this.headerT = 0.45;   // 이 시간 안에 공이 오면 슛
         const hs = Math.max(1, hlen(ball.vel));
         const t = Math.min(0.6, hdist(ball.pos, this.pos) / hs);
         const yAt = ball.pos.y + ball.vel.y * t - 0.5 * G * t * t;
@@ -249,6 +307,7 @@ class Player {
     this.headerT = Math.max(0, this.headerT - dt);
     this.kickAnim = Math.max(0, this.kickAnim - dt);
     this.leanT = Math.max(0, this.leanT - dt);
+    this.headAnim = Math.max(0, this.headAnim - dt);
     if (this.charge) {
       this.charge.t += dt;
       if (this.charge.want !== undefined && this.chargePower() >= this.charge.want) this.releaseCharge();
@@ -267,6 +326,10 @@ class Player {
         if (sl.t <= 0) this.setState('recover', 0.7);
         break;
       }
+      case 'trip':   // 휘청: 밀리던 힘이 조금 남아 미끄러지다 멈춤
+        this.vel.multiplyScalar(Math.pow(0.12, dt));
+        this.stateT -= dt; if (this.stateT <= 0) this.state = 'normal';
+        break;
       case 'recover': case 'stun':
         this.vel.multiplyScalar(Math.pow(0.02, dt));
         this.stateT -= dt; if (this.stateT <= 0) this.state = 'normal';
@@ -308,7 +371,13 @@ class Player {
       this.vel.set(this.face.x * ns, 0, this.face.z * ns);
     } else {
       if (dist > 0.01) _v.multiplyScalar(speed / dist); else _v.set(0, 0, 0);
-      this.vel.lerp(_v, 1 - Math.exp(-9 * dt));
+      // 관성: 가속은 초당 9m/s²까지, 감속·급한 방향 전환은 14m/s²까지 (순간 정지·순간 반대 방향 불가)
+      _w.set(_v.x - this.vel.x, 0, _v.z - this.vel.z);
+      const need = hlen(_w), cur = hlen(this.vel), want = hlen(_v);
+      const braking = want < cur || (this.vel.x * _v.x + this.vel.z * _v.z) < cur * want * 0.5;
+      const lim = (braking ? 14 : 9) * dt;
+      if (need > lim) _w.multiplyScalar(lim / need);
+      this.vel.add(_w);
     }
   }
 }
@@ -319,11 +388,70 @@ class Keeper {
     this.game = game; this.team = team; this.side = team === 0 ? -1 : 1;
     this.pos = new V3(this.side * (HALF_L - 0.6), 0, 0);
     this.yaw = team === 0 ? 0 : Math.PI;
-    this.state = 'guard'; this.t = 0; this.decision = null; this.diveTarget = new V3(); this.diveY = 1;
+    this.state = 'guard'; this.t = 0; this.decision = null; this.diveTarget = new V3(); this.diveY = 1; this.gk = null;
   }
-  reset() { this.pos.set(this.side * (HALF_L - 0.6), 0, 0); this.state = 'guard'; this.decision = null; }
+  reset() { this.pos.set(this.side * (HALF_L - 0.6), 0, 0); this.state = 'guard'; this.decision = null; this.gk = null; }
+  // 패스 받을 사람: 같은 팀 사람 우선, 없으면 가까운 같은 팀
+  receiver() {
+    const mates = this.game.players.filter(p => p.team === this.team && p.state !== 'stun');
+    return mates.find(p => p.isHuman) || mates.sort((a, c) => hdist(a.pos, this.pos) - hdist(c.pos, this.pos))[0] || null;
+  }
+  // 받는 사람이 뛰어가는 쪽으로 조금 앞을 노림
+  leadPoint(p, t) { return new V3(clamp(p.pos.x + p.vel.x * t * 0.8, -HALF_L + 1, HALF_L - 1), 0, clamp(p.pos.z + p.vel.z * t * 0.8, -HALF_W + 1, HALF_W - 1)); }
+  // 골킥 시작: 공 뒤로 물러났다가(도움닫기) 받을 사람을 보고 달려와서 참
+  startGoalKick(spot) {
+    this.state = 'setup';
+    const dir = new V3(-this.side, 0, -Math.sign(spot.z) * 0.35).normalize();   // 대략 경기장 안쪽
+    this.gk = { phase: 'walk', spot: spot.clone(), dir, t: 0 };
+  }
+  updateGoalKick(dt) {
+    const k = this.gk;
+    k.t += dt;
+    const move = (tx, tz, speed) => {
+      _v.set(tx - this.pos.x, 0, tz - this.pos.z);
+      const d = _v.length(), st = speed * dt;
+      if (d > st) _v.multiplyScalar(st / d);
+      this.pos.add(_v); return d;
+    };
+    if (this.state === 'kick') { this.t -= dt; if (this.t <= 0) { this.state = 'guard'; this.gk = null; } return; }
+    if (k.phase === 'walk') {          // 도움닫기 자리로 (공 뒤 2.4m)
+      const d = move(k.spot.x - k.dir.x * 2.4, k.spot.z - k.dir.z * 2.4, 3.2);
+      this.yaw = Math.atan2(k.spot.z - this.pos.z, k.spot.x - this.pos.x);
+      if (d < 0.1 || k.t > 4) { k.phase = 'look'; k.t = 0; }
+    } else if (k.phase === 'look') {   // 고개 들어 받을 사람 확인
+      const r = this.receiver();
+      if (r) this.yaw = Math.atan2(r.pos.z - this.pos.z, r.pos.x - this.pos.x);
+      if (k.t > 0.8) { k.phase = 'run'; k.t = 0; }
+    } else if (k.phase === 'run') {    // 달려와서 공 옆에 디딤발
+      const d = move(k.spot.x - k.dir.x * 0.4, k.spot.z - k.dir.z * 0.4, 5.5);
+      this.yaw = Math.atan2(k.spot.z - this.pos.z, k.spot.x - this.pos.x);
+      if (d < 0.08 || k.t > 2) this.kickGoalKick();
+    }
+  }
+  kickGoalKick() {
+    const g = this.game, b = g.ball, r = this.receiver();
+    let aim, type;
+    if (r) {
+      const d0 = hdist(r.pos, b.pos);
+      type = d0 < 14 ? 'ground' : 'lob';
+      aim = this.leadPoint(r, type === 'ground' ? d0 / 11 : d0 / 14);
+    } else { type = 'lob'; aim = new V3(-this.side * 3, 0, rand(-6, 6)); }
+    _v.set(aim.x - b.pos.x, 0, aim.z - b.pos.z);
+    const d = _v.length() || 1; _v.multiplyScalar(1 / d);
+    const a = gauss() * 1.5 * DEG, c = Math.cos(a), s = Math.sin(a);
+    const dx = _v.x * c - _v.z * s, dz = _v.x * s + _v.z * c;
+    const { vh, vy, spin } = kickVel(type, powerFor(type, d));
+    b.release(new V3(dx * vh, vy, dz * vh), this);
+    if (type === 'ground') b.setRolling(0.7); else b.spin.set(-dz * spin, 0, dx * spin);
+    g.ballLocked = false;
+    this.decision = { id: b.kickId, save: false };
+    this.yaw = Math.atan2(dz, dx);
+    this.state = 'kick'; this.t = 0.45;
+    g.msg(type === 'ground' ? '골킥 - 짧은 패스' : '골킥 - 롱킥', 0.9);
+  }
   update(dt) {
     const g = this.game, b = g.ball, gx = this.side * HALF_L;
+    if (this.gk) { this.updateGoalKick(dt); return; }
     if (this.state === 'hold') {
       this.t -= dt; b.pos.set(this.pos.x - this.side * 0.35, 1.1, this.pos.z); b.vel.set(0, 0, 0);
       if (this.t <= 0) this.distribute();
@@ -396,27 +524,36 @@ class Keeper {
     if (b.owner) b.owner.cd.noTouch = 0.6;
     b.owner = null; b.keeper = this; b.vel.set(0, 0, 0); b.lastTouch = this;
     this.game.offside = null;
-    this.state = 'hold'; this.t = 1.1;
+    this.state = 'hold'; this.t = 0.55;   // 잡자마자 곧 패스
     this.game.msg('키퍼 선방!', 1.0);
   }
+  // 잡은 공을 같은 팀(사람 우선)에게 바로 줌: 가까우면 굴려주고, 멀면 던지기
   distribute() {
-    const g = this.game, b = g.ball;
-    // 가장 자유로운 같은 팀 선수에게 던짐
-    let best = null, bestScore = -1e9;
-    for (const p of g.players) {
-      if (p.team !== this.team) continue;
-      const free = Math.min(...g.players.filter(o => o.team !== this.team).map(o => hdist(o.pos, p.pos)));
-      const score = free - hdist(p.pos, this.pos) * 0.15;
-      if (score > bestScore) { bestScore = score; best = p; }
+    const g = this.game, b = g.ball, r = this.receiver();
+    b.keeper = null; this.state = 'recover'; this.t = 0.4;
+    let aim, type;
+    if (r) {
+      const d0 = hdist(r.pos, this.pos);
+      type = d0 < 20 ? 'ground' : 'lob';
+      aim = this.leadPoint(r, type === 'ground' ? d0 / 10 : d0 / 13);
+    } else { type = 'lob'; aim = new V3(-this.side * 3, 0, rand(-6, 6)); }
+    _v.set(aim.x - this.pos.x, 0, aim.z - this.pos.z);
+    const d = _v.length() || 1, ux = _v.x / d, uz = _v.z / d;   // (_v는 공 계산에서 다시 쓰이므로 방향을 따로 보관)
+    if (type === 'ground') {          // 굴려주기: 받는 곳에서 초속 3m 정도로 도착
+      const v0 = Math.sqrt(9 + 2 * PHYS.rolling * d) * 1.06;
+      b.pos.set(this.pos.x + ux * 0.6, BALL_R + 0.01, this.pos.z + uz * 0.6);
+      b.release(new V3(ux * v0, 0, uz * v0), this); b.setRolling(1);
+      g.msg('키퍼 패스', 0.8);
+    } else {                          // 던지기: 어깨 높이에서 포물선
+      // 받는 사람 3m 앞에 떨어져 한두 번 튀며 발 앞으로 가도록, 공기저항까지 넣어 세기를 찾음
+      const vy = clamp(2.5 + d * 0.08, 3, 6), vh = throwSpeed(vy, Math.max(4, d - 3));
+      b.pos.set(this.pos.x + ux * 0.6, 1.9, this.pos.z + uz * 0.6);
+      b.release(new V3(ux * vh, vy, uz * vh), this);
+      g.msg('키퍼 스로', 0.8);
     }
-    _v.set(best.pos.x + best.dir * 3 - this.pos.x, 0, best.pos.z - this.pos.z);
-    const dist = _v.length(); _v.normalize();
-    const vh = clamp(6 + dist * 0.45, 8, 17), vy = clamp(dist * 0.22, 3, 8);
-    b.keeper = null;
-    b.pos.set(this.pos.x + _v.x * 0.6, 1.0, this.pos.z + _v.z * 0.6);
-    b.release(new V3(_v.x * vh, vy, _v.z * vh), this);
+    this.yaw = Math.atan2(uz, ux);
     this.decision = { id: b.kickId, save: false };
-    this.state = 'recover'; this.t = 0.4;
+    g.offside = null;
   }
 }
 
@@ -587,6 +724,7 @@ export class Game {
     this.msgText = ''; this.msgT = 0;
     this.setPiece = null;          // 진행 중인 세트피스 { type, team, taker, spot, kickId, t }
     this.offside = null;           // 패스 순간 오프사이드 위치에 있던 선수들 { team, ids }
+    this.ballLocked = false;       // 골킥 준비 중에는 아무도 공을 못 건드림
     this.placeForKickoff(0);
   }
   // 경기에 실제로 뛰는 선수 (AI가 꺼져 있으면 사람만)
@@ -669,13 +807,55 @@ export class Game {
     this.msg(`${SP_NAMES[type]} - ${team === 0 ? '블루' : '레드'}`, 1.4);
   }
 
+  // 골킥: 골 에어리어 안(공이 나간 쪽)에 공을 놓고 골키퍼가 도움닫기 후 참. 상대는 페널티 박스 밖
+  setupGoalKick(team, sz) {
+    const b = this.ball, k = this.keepers[team], s = team === 0 ? -1 : 1;   // 지키는 골대 쪽
+    const spot = new V3(s * (HALF_L - GA_DEPTH), 0, (sz || 1) * GA_Z);
+    b.owner = null; b.keeper = null; b.vel.set(0, 0, 0); b.spin.set(0, 0, 0); b.pos.set(spot.x, BALL_R, spot.z);
+    this.offside = null; this.setPiece = null;
+    for (const p of this.players) { p.charge = null; p.pendingKick = null; if (p.state === 'slide') p.setState('recover', 0.3); }
+    if (!k) { this.setupSetPiece('free', team, spot); if (this.setPiece) this.setPiece.type = 'goalkick'; return; }
+    k.reset(); k.pos.set(s * (HALF_L - 0.6), 0, spot.z * 0.5);
+    k.startGoalKick(spot);
+    this.ballLocked = true;
+    this.setPiece = { type: 'goalkick', team, taker: k, spot, kickId: b.kickId, t: 0 };
+    this.msg(`골킥 - ${team === 0 ? '블루' : '레드'}`, 1.4);
+  }
+  // 공이 골문 밖으로 골라인을 넘었는지: 공격팀이 마지막 → 골킥, 수비팀이 마지막 → 코너킥
+  checkGoalLine() {
+    const b = this.ball, p = b.pos;
+    if (b.owner || b.keeper || this.freezeT > 0 || this.ballLocked) return;
+    if (Math.abs(p.x) <= HALF_L + BALL_R) return;
+    if (Math.abs(p.z) < GOAL_W / 2 && p.y < GOAL_H) return;      // 골문 안쪽은 골 판정에서 처리
+    const s = Math.sign(p.x), defending = s === 1 ? 1 : 0;       // +x 골대는 레드가 지킴
+    const last = b.lastTouch ? b.lastTouch.team : 1 - defending;
+    const sz = Math.sign(p.z) || 1;
+    if (last === defending) {
+      const team = 1 - defending, spot = new V3(s * (HALF_L - 0.4), 0, sz * (HALF_W - 0.4));
+      this.msg(`${team === 0 ? '블루' : '레드'} 코너킥`, 1.0);
+      this.freeze(1.0, 'out', () => this.setupSetPiece('corner', team, spot));
+    } else {
+      this.msg('골라인 아웃', 1.0);
+      this.freeze(1.0, 'out', () => this.setupGoalKick(defending, sz));
+    }
+  }
+
   // 세트피스 진행 관리: 상대 거리 유지, 끝났는지 판단
   updateSetPiece(dt) {
     const sp = this.setPiece, b = this.ball;
     if (!sp) return;
     sp.t += dt;
-    const done = b.kickId !== sp.kickId || (b.owner !== sp.taker && !b.keeper) || (sp.type === 'kickoff' && hdist(b.pos, sp.spot) > 1.0) || sp.t > 20;
-    if (done) { this.setPiece = null; return; }
+    const gk = sp.type === 'goalkick' && this.ballLocked;
+    const done = b.kickId !== sp.kickId || (!gk && b.owner !== sp.taker && !b.keeper) || (sp.type === 'kickoff' && hdist(b.pos, sp.spot) > 1.0) || sp.t > 20;
+    if (done) { this.setPiece = null; this.ballLocked = false; return; }
+    if (gk) {   // 골킥: 상대는 페널티 박스 밖으로
+      const s = sp.team === 0 ? -1 : 1;
+      for (const q of this.players) {
+        if (q.team === sp.team || Math.abs(q.pos.z) > BOX_HALF_W + 0.5) continue;
+        if (s * q.pos.x > HALF_L - BOX_DEPTH - 0.5) q.pos.x = s * (HALF_L - BOX_DEPTH - 0.5);
+      }
+      return;
+    }
     // 사람이 10초 동안 안 차면 자동으로 땅볼 패스
     if (sp.taker.isHuman && sp.type !== 'kickoff' && sp.t > 10 && !sp.taker.charge && !sp.taker.pendingKick) {
       sp.taker.charge = { type: sp.type === 'penalty' ? 'shot' : 'ground', t: 0, want: 0.45 };
@@ -752,6 +932,7 @@ export class Game {
     b.pos.set(p.pos.x + dx * 0.55, BALL_R + 0.01, p.pos.z + dz * 0.55);
     b.release(new V3(dx * vh, vy, dz * vh), p);
     if (spin) b.spin.set(-dz * spin, 0, dx * spin);
+    else if (k.type === 'ground') b.setRolling(0.7);   // 땅볼은 굴러가는 회전으로 출발 (덜 미끄러짐)
     p.cd.noTouch = 0.3; p.pendingKick = null; p.kickAnim = 0.25;
   }
 
@@ -767,10 +948,11 @@ export class Game {
         if (Math.random() < ch) {
           if (Math.random() < 0.55) this.giveBall(p);
           else { o.cd.noTouch = 0.4; b.release(new V3(p.face.x * 4 + rand(-1, 1), 0.4, p.face.z * 4 + rand(-1, 1)), p); }
+          o.setState('trip', 1.0);   // 숏태클에 걸려 1초 휘청
           this.msg('커트 성공!', 0.8);
         } else this.msg('커트 실패', 0.6);
       }
-    } else if (!o && !b.keeper && b.pos.y < 1.0 && hdist(b.pos, _w) < 1.1) { if (!this.touchCheck(p)) this.giveBall(p); }
+    } else if (!o && !b.keeper && !this.ballLocked && b.pos.y < 1.0 && hdist(b.pos, _w) < 1.1) { if (!this.touchCheck(p)) this.giveBall(p); }
   }
 
   tryShoulder(p) {
@@ -790,7 +972,7 @@ export class Game {
 
   // 파울: 파울한 팀의 페널티 박스 안이면 페널티킥, 아니면 그 자리에서 프리킥
   foul(by, victim) {
-    victim.state = 'normal';
+    victim.setState('stun', 1.5);   // 반칙당한 선수도 넘어짐 (세트피스 시작 때 일어남)
     by.setState('recover', 1.6);
     const ownGoalX = -by.dir * HALF_L;
     const inBox = Math.abs(victim.pos.x - ownGoalX) < BOX_DEPTH && Math.abs(victim.pos.z) < BOX_HALF_W;
@@ -830,9 +1012,9 @@ export class Game {
     if (b.owner) this.syncOwnedBall(dt); else if (!b.keeper) b.step(dt);
     this.handleSlides();
     if (this.freezeT > 0) return;    // 파울이 선언되면 이번 틱은 여기서 멈춤
-    this.handleHeaders(); this.handleCapture(); this.handleBodyBlocks();
+    this.handleAirShots(); this.handleCapture(); this.handleBodyBlocks();
     if (this.freezeT > 0) return;    // 오프사이드
-    this.checkGoal();   // 라인 아웃 없음: 공은 바깥 벽에 튕겨 계속 진행
+    this.checkGoal(); this.checkGoalLine();   // 터치라인은 아웃 없음(벽에 튕김), 골라인은 골킥·코너킥
   }
 
   syncOwnedBall(dt) {
@@ -847,7 +1029,7 @@ export class Game {
     b.prev.copy(b.pos);
     b.pos.lerp(_v, 1 - Math.exp(-20 * dt));
     b.pos.y = BALL_R + p.y * 0.9;
-    b.vel.set(p.vel.x, 0, p.vel.z);
+    b.vel.set(p.vel.x, 0, p.vel.z); b.setRolling(1);
   }
 
   handleSlides() {
@@ -859,10 +1041,10 @@ export class Game {
         if (o.team === p.team || sl.hit || hdist(o.pos, p.pos) > 0.8) continue;
         if (o.y > 0.2) { if (!sl.dodged) { sl.dodged = true; this.msg('점프로 태클 회피!', 0.9); } continue; }
         sl.hit = true;
-        if (sl.touched) o.setState('stun', 0.8); else { this.foul(p, o); return; }
+        if (sl.touched) o.setState('stun', 1.5); else { this.foul(p, o); return; }   // 깊은 태클: 넘어져 1.5초
       }
       _w.set(p.pos.x + sl.dir.x * 0.6, 0, p.pos.z + sl.dir.z * 0.6);
-      if (!sl.touched && !b.keeper && b.pos.y < 0.35 && hdist(b.pos, _w) < 0.55) {
+      if (!sl.touched && !b.keeper && !this.ballLocked && b.pos.y < 0.35 && hdist(b.pos, _w) < 0.55) {
         sl.touched = true;
         if (!b.owner && this.touchCheck(p)) return;
         const o = b.owner;
@@ -874,38 +1056,58 @@ export class Game {
     }
   }
 
-  handleHeaders() {
+  // Space를 누른 뒤 0.45초 안에 공이 오면 바로 슛
+  // - 공이 머리 근처(1.2m 이상): 헤딩슛 / 발~허리 높이: 발리슛 / 땅볼: 원터치 슛
+  handleAirShots() {
     const b = this.ball;
-    if (b.owner || b.keeper) return;
+    if (b.owner || b.keeper || this.ballLocked) return;
     for (const p of this.players) {
-      if (p.headerT <= 0) continue;
-      _w.set(p.pos.x + p.face.x * 0.12, 1.65 + p.y, p.pos.z + p.face.z * 0.12);
-      if (b.pos.distanceTo(_w) > 0.7 || b.pos.y < 1.2) continue;
-      if (this.touchCheck(p)) return;
-      this.markOffside(p);
+      if (p.headerT <= 0 || p.state !== 'normal') continue;
       const t = p.input.target;
       _v.set(t.x - p.pos.x, 0, t.z - p.pos.z);
       const d = _v.length() || 1; _v.multiplyScalar(1 / d);
-      const a = gauss() * 4 * DEG, c = Math.cos(a), s = Math.sin(a);
-      const dx = _v.x * c - _v.z * s, dz = _v.x * s + _v.z * c;
-      const sp = 8 + Math.min(b.speed(), 20) * 0.3;
-      const vy = d > 14 ? 3.5 : d < 6 ? -2 : 0.5;
+      const incoming = Math.min(b.speed(), 30);
+      _w.set(p.pos.x + p.face.x * 0.12, 1.65 + p.y, p.pos.z + p.face.z * 0.12);
+      const head = b.pos.y >= 1.2 && b.pos.distanceTo(_w) < 0.7;
+      const h = b.pos.y - p.y;
+      _w.set(p.pos.x + p.face.x * 0.55, 0, p.pos.z + p.face.z * 0.55);
+      const foot = !head && h < 1.25 && hdist(b.pos, _w) < 0.8;
+      if (!head && !foot) continue;
+      if (this.touchCheck(p)) return;
+      this.markOffside(p);
+      let err, sp, vy, name;
+      if (head) {               // 헤딩슛: 오던 공의 힘을 조금 이용, 골문 가까우면 아래로 찍음
+        err = 4 + (p.y > 0 ? 1 : 0); sp = 11 + incoming * 0.35; vy = d > 14 ? 2 : -1.2; name = '헤딩슛!';
+        p.headAnim = 0.3;
+      } else if (h > 0.25) {    // 발리슛: 공이 높을수록 뜨기 쉽고 부정확
+        err = 3 + h * 4 + (incoming > 15 ? 3 : 0) + (p.y > 0 ? 3 : 0); sp = clamp(20 + incoming * 0.25, 20, 31); vy = 0.6 + h * 1.6 + rand(-0.5, 0.8); name = '발리슛!';
+        p.kickAnim = 0.25;
+      } else {                  // 원터치 슛: 굴러오는 공을 멈추지 않고 바로
+        err = 2.5 + (incoming > 12 ? 2 : 0); sp = clamp(19 + incoming * 0.2, 19, 28); vy = 1.0 + rand(-0.3, 0.6); name = '원터치 슛!';
+        p.kickAnim = 0.25;
+      }
+      if (hlen(p.vel) > 5) err += 2;
+      const a = gauss() * err * DEG, c = Math.cos(a), sn = Math.sin(a);
+      const dx = _v.x * c - _v.z * sn, dz = _v.x * sn + _v.z * c;
+      p.setYaw(Math.atan2(dz, dx));
       b.release(new V3(dx * sp, vy, dz * sp), p);
+      if (!head) b.spin.set(dz * 6, 0, -dx * 6);   // 발등으로 찬 약한 탑스핀
       p.headerT = 0; p.cd.noTouch = 0.3;
-      this.msg('헤딩!', 0.7);
+      this.msg(name, 0.8);
       return;
     }
   }
 
   handleCapture() {
     const b = this.ball;
-    if (b.owner || b.keeper) return;
+    if (b.owner || b.keeper || this.ballLocked) return;
     let best = null, bd = 1e9;
     for (const p of this.players) {
-      if (p.cd.noTouch > 0 || !['normal', 'cut', 'skill'].includes(p.state)) continue;
+      if (p.cd.noTouch > 0 || p.headerT > 0 || !['normal', 'cut', 'skill'].includes(p.state)) continue;   // Space 누른 선수는 받지 않고 바로 참
       _w.set(p.pos.x + p.face.x * 0.35, 0, p.pos.z + p.face.z * 0.35);
-      const d = hdist(b.pos, _w);
       const rel = Math.hypot(b.vel.x - p.vel.x, b.vel.z - p.vel.z);
+      // 발 앞이 기본이지만, 느린 공은 옆·뒤에서 와도 몸 근처면 받아냄 (키퍼 패스를 서서 기다릴 때)
+      const d = Math.min(hdist(b.pos, _w), rel < 12 ? hdist(b.pos, p.pos) - 0.1 : 9);
       // 발 높이 기준 (점프 중이면 몸이 뜬 만큼 높아짐) → 점프해서 높은 공을 가슴·발로 받기 가능
       const h = b.pos.y - p.y;
       const low = (h > -0.2 && h < 0.6) || (h >= 0.6 && h < 1.4 && rel < 10);
@@ -918,7 +1120,7 @@ export class Game {
 
   handleBodyBlocks() {
     const b = this.ball;
-    if (!b.owner && !b.keeper) for (const p of this.players) {
+    if (!b.owner && !b.keeper && !this.ballLocked) for (const p of this.players) {
       if (b.lastTouch === p && p.cd.noTouch > 0) continue;
       if (b.pos.y > 1.9 + p.y || b.pos.y < p.y) continue;
       const dx = b.pos.x - p.pos.x, dz = b.pos.z - p.pos.z, d = Math.hypot(dx, dz), R = 0.3 + BALL_R;
@@ -978,11 +1180,12 @@ export class Game {
       t: 's', st: this.state, tm: Math.ceil(this.timeLeft), sc: this.score,
       m: this.msgT > 0 ? this.msgText : '',
       o: b.owner ? b.owner.id : -1, k: b.keeper ? b.keeper.team : -1,
-      sp: this.setPiece ? [SP_TYPES.indexOf(this.setPiece.type), this.setPiece.team, this.setPiece.taker.id] : 0,
+      sp: this.setPiece ? [SP_TYPES.indexOf(this.setPiece.type), this.setPiece.team, this.setPiece.taker.id ?? -1] : 0,
       b: [r(b.pos.x), r(b.pos.y), r(b.pos.z), r(b.vel.x), r(b.vel.y), r(b.vel.z)],
       p: this.slots.map(p => [r(p.pos.x), r(p.pos.z), r(p.y), r(p.yaw), r(p.vel.x), r(p.vel.z),
         STATES.indexOf(p.state), r(p.stamina), p.charge ? KICKS.indexOf(p.charge.type) : 0, r(p.chargePower()),
-        p.kickAnim > 0 ? 1 : 0, p.headerT > 0 ? 1 : 0, p.leanT > 0 ? 1 : 0]),
+        p.kickAnim > 0 ? 1 : 0, p.headAnim > 0 || (p.headerT > 0 && p.y > 0.1) ? 1 : 0, p.leanT > 0 ? 1 : 0,
+        (p.state === 'stun' || p.state === 'trip') ? r(clamp(p.stateT / p.stateT0, 0, 1)) : 0]),
       g: this.keepers.map(k => [r(k.pos.x), r(k.pos.z), r(k.yaw), KSTATES.indexOf(k.state), r(k.diveTarget.z - k.pos.z), r(k.diveY)]),
     };
   }
