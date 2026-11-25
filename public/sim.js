@@ -17,6 +17,10 @@ export const DEG = Math.PI / 180;
 export const STATES = ['normal', 'slide', 'recover', 'stun', 'skill', 'cut'];
 export const KSTATES = ['guard', 'dive', 'hold', 'recover'];
 export const KICKS = [null, 'lob', 'ground', 'shot'];
+// 세트피스 (축구 규칙에 따른 재개)
+export const SP_TYPES = ['kickoff', 'throw', 'corner', 'goalkick', 'free', 'penalty'];
+export const SP_NAMES = { kickoff: '킥오프', throw: '스로인', corner: '코너킥', goalkick: '골킥', free: '프리킥', penalty: '페널티킥' };
+export const BOX_DEPTH = 8, BOX_HALF_W = 8, PEN_SPOT = 6, SP_DIST = 5;   // 페널티 박스, 페널티 지점, 상대가 떨어져야 할 거리
 
 const SPD = { slow: 1.8, walk: 3.4, run: 6.8, runBall: 6.0, tired: 4.6 };
 const PHYS = { drag: 0.012, magnus: 0.003, restitution: 0.58, bounceFriction: 0.86, rolling: 2.4 };
@@ -160,12 +164,19 @@ class Player {
     if (!c || (type && c.type !== type)) return;
     this.charge = null;
     if (!this.hasBall) return;
-    const power = clamp(c.t / 1.0, 0.05, 1), t = this.input.target;
+    let power = clamp(c.t / 1.0, 0.05, 1);
+    const t = this.input.target;
+    if (this.isTaker('throw')) power = Math.min(power, 0.55);   // 스로인은 손으로 던지므로 멀리 못 감
     const yaw = Math.atan2(t.z - this.pos.z, t.x - this.pos.x);
     this.pendingKick = { type: c.type, power, target: t.clone(), yaw, turned: Math.abs(wrap(yaw - this.yaw)), t: 0 };
   }
   // 스페이스: 공이 있으면 슛 충전, 없으면 헤딩
-  spaceDown() { if (this.hasBall) this.startCharge('shot'); else this.actions.push('header'); }
+  spaceDown() {
+    if (this.isTaker('throw')) return;   // 스로인은 슛 불가 (클릭 패스로 던짐)
+    if (this.hasBall) this.startCharge('shot'); else this.actions.push('header');
+  }
+  // 세트피스 키커인지 (type을 주면 그 종류일 때만)
+  isTaker(type) { const sp = this.game.setPiece; return !!sp && sp.taker === this && (!type || sp.type === type); }
 
   doAction(a) {
     const g = this.game, ball = g.ball, ground = this.y === 0;
@@ -257,6 +268,8 @@ class Player {
       : this.isRunning() ? (this.stamina < 0.2 ? SPD.tired : has ? SPD.runBall : SPD.run) : SPD.walk;
     if (dist < 0.5) speed = 0; else if (dist < 1.5) speed *= dist - 0.5;
     if (this.pendingKick) speed *= 0.45;
+    // 세트피스 키커는 제자리에서 방향만 돌릴 수 있음 (킥오프는 예외)
+    if (this.isTaker() && this.game.setPiece.type !== 'kickoff') speed = 0;
     const desiredYaw = this.pendingKick ? this.pendingKick.yaw : dist > 0.3 ? Math.atan2(_v.z, _v.x) : this.yaw;
     this.turnTo(desiredYaw, (has ? (this.isRunning() ? 5.5 : 8.5) : 12) * dt);
     if (has) {
@@ -350,7 +363,8 @@ class Keeper {
   catchBall() {
     const b = this.game.ball;
     if (b.owner) b.owner.cd.noTouch = 0.6;
-    b.owner = null; b.keeper = this; b.vel.set(0, 0, 0);
+    b.owner = null; b.keeper = this; b.vel.set(0, 0, 0); b.lastTouch = this;
+    this.game.offside = null;
     this.state = 'hold'; this.t = 1.1;
     this.game.msg('키퍼 선방!', 1.0);
   }
@@ -441,6 +455,26 @@ class AIBrain {
     if (b.owner === p) {
       if (p.charge || p.pendingKick) return;
       const dGoal = Math.hypot(goalX - p.pos.x, p.pos.z);
+      // --- 세트피스 키커 ---
+      const sp = g.setPiece;
+      if (sp && sp.taker === p && sp.type !== 'kickoff') {
+        if (sp.t < 1.0) return;   // 잠깐 준비
+        if (sp.type === 'penalty' || (sp.type === 'free' && dGoal < 20 && Math.random() < 0.6)) {
+          inp.target.set(goalX, 0, (Math.random() < 0.5 ? -1 : 1) * (GOAL_W / 2 - 0.5));
+          p.charge = { type: 'shot', t: 0, want: rand(0.6, 0.85) };
+        } else if (sp.type === 'corner') {
+          inp.target.set(p.dir * (HALF_L - 5), 0, rand(-3, 3));
+          p.charge = { type: 'lob', t: 0, want: clamp((hdist(inp.target, p.pos) - 2) / 32, 0.15, 0.95) };
+        } else {
+          let mate = this.openTeammate();
+          if (!mate) { let bd = 1e9; for (const q of g.players) if (q !== p && q.team === p.team) { const d = hdist(q.pos, p.pos); if (d < bd) { bd = d; mate = q; } } }
+          inp.target.set(mate.pos.x + mate.dir * 1.5, 0, mate.pos.z);
+          const d = hdist(inp.target, p.pos);
+          if (sp.type === 'throw' && d > 12) p.charge = { type: 'lob', t: 0, want: clamp((d - 2) / 32, 0.15, 0.55) };
+          else p.charge = { type: 'ground', t: 0, want: clamp((Math.sqrt(2 * 2.6 * d) + 2.5 - 4) / 16, 0.1, sp.type === 'throw' ? 0.55 : 0.95) };
+        }
+        return;
+      }
       let nearOpp = null, dOpp = 1e9;
       for (const o of g.players) if (o.team !== p.team) { const d = hdist(o.pos, p.pos); if (d < dOpp) { dOpp = d; nearOpp = o; } }
       if (dGoal < 17 && decide && Math.random() < 0.5) {
@@ -518,6 +552,8 @@ export class Game {
     this.state = 'lobby';          // lobby | play | end
     this.freezeT = 0; this.freezeKind = null; this.afterFreeze = null;
     this.msgText = ''; this.msgT = 0;
+    this.setPiece = null;          // 진행 중인 세트피스 { type, team, taker, spot, kickId, t }
+    this.offside = null;           // 패스 순간 오프사이드 위치에 있던 선수들 { team, ids }
     this.placeForKickoff(0);
   }
   msg(text, dur = 1.2) { this.msgText = text; this.msgT = dur; }
@@ -545,9 +581,134 @@ export class Game {
 
   kickoff(team) {
     this.placeForKickoff(team);
-    this.giveBall(this.players.find(p => p.team === team && p.slot === 0));
+    const taker = this.players.find(p => p.team === team && p.slot === 0);
+    this.giveBall(taker);
+    this.offside = null;
+    this.setPiece = { type: 'kickoff', team, taker, spot: new V3(0, 0, 0), kickId: this.ball.kickId, t: 0 };
     this.freeze(0.9, 'kickoff');
     this.msg('킥오프', 0.9);
+  }
+
+  // ---------- 축구 규칙: 세트피스 ----------
+  // type: throw | corner | goalkick | free | penalty, team: 공을 차는 팀
+  setupSetPiece(type, team, spot, taker = null) {
+    const b = this.ball;
+    b.owner = null; b.keeper = null; b.vel.set(0, 0, 0); b.spin.set(0, 0, 0);
+    this.offside = null; this.setPiece = null;
+    for (const p of this.players) { p.charge = null; p.pendingKick = null; if (p.state === 'slide') p.setState('recover', 0.3); }
+    if (type === 'goalkick') {      // 골킥은 골키퍼가 잡고 있다가 찬다
+      const k = this.keepers[team];
+      k.reset(); k.state = 'hold'; k.t = 1.6; b.keeper = k;
+      b.pos.set(k.pos.x, 1.1, k.pos.z);
+      this.msg(`골킥 - ${team === 0 ? '블루' : '레드'}`, 1.4);
+      return;
+    }
+    const sideOf = t => this.players.filter(p => p.team === t && p.state !== 'stun');
+    if (!taker) {   // 가장 가까운 선수가 찬다 (사람 우선)
+      let best = null, bd = 1e9;
+      for (const p of sideOf(team)) { const d = hdist(p.pos, spot) - (p.isHuman ? 4 : 0); if (d < bd) { bd = d; best = p; } }
+      taker = best || this.players.find(p => p.team === team);
+    }
+    // 키커가 향할 방향
+    const goalX = taker.dir * HALF_L;
+    let aimX, aimZ;
+    if (type === 'throw') { aimX = spot.x + taker.dir * 2; aimZ = 0; }
+    else if (type === 'corner') { aimX = taker.dir * (HALF_L - PEN_SPOT); aimZ = 0; }
+    else { aimX = goalX; aimZ = 0; }
+    taker.setYaw(Math.atan2(aimZ - spot.z, aimX - spot.x));
+    taker.state = 'normal'; taker.vel.set(0, 0, 0); taker.y = 0; taker.vy = 0;
+    taker.pos.set(spot.x - taker.face.x * 0.5, 0, spot.z - taker.face.z * 0.5);
+    taker.input.target.set(aimX, 0, aimZ);
+    b.pos.set(spot.x, BALL_R, spot.z);
+    this.giveBall(taker);
+    if (type === 'penalty') {
+      // 키커와 골키퍼를 뺀 모두는 페널티 박스 밖으로
+      const s = taker.dir;
+      for (const p of this.players) if (p !== taker && s * p.pos.x > HALF_L - BOX_DEPTH - 1) p.pos.x = s * (HALF_L - BOX_DEPTH - 1.5);
+      this.keepers[1 - team].reset();
+    }
+    this.setPiece = { type, team, taker, spot: spot.clone(), kickId: b.kickId, t: 0 };
+    this.msg(`${SP_NAMES[type]} - ${team === 0 ? '블루' : '레드'}`, 1.4);
+  }
+
+  // 세트피스 진행 관리: 상대 거리 유지, 끝났는지 판단
+  updateSetPiece(dt) {
+    const sp = this.setPiece, b = this.ball;
+    if (!sp) return;
+    sp.t += dt;
+    const done = b.kickId !== sp.kickId || (b.owner !== sp.taker && !b.keeper) || (sp.type === 'kickoff' && hdist(b.pos, sp.spot) > 1.0) || sp.t > 20;
+    if (done) { this.setPiece = null; return; }
+    // 사람이 10초 동안 안 차면 자동으로 땅볼 패스
+    if (sp.taker.isHuman && sp.type !== 'kickoff' && sp.t > 10 && !sp.taker.charge && !sp.taker.pendingKick) {
+      sp.taker.charge = { type: sp.type === 'penalty' ? 'shot' : 'ground', t: 0, want: 0.45 };
+    }
+    const R = sp.type === 'kickoff' ? 4 : SP_DIST;
+    for (const q of this.players) {
+      if (q === sp.taker) continue;
+      if (sp.type === 'penalty') {
+        const s = sp.taker.dir;
+        if (s * q.pos.x > HALF_L - BOX_DEPTH - 1) q.pos.x = s * (HALF_L - BOX_DEPTH - 1);
+      } else if (q.team !== sp.team) {
+        const dx = q.pos.x - sp.spot.x, dz = q.pos.z - sp.spot.z, d = Math.hypot(dx, dz);
+        if (d < R) { const k = d > 1e-3 ? R / d : 1; q.pos.x = sp.spot.x + (d > 1e-3 ? dx * k : -q.dir * R); q.pos.z = sp.spot.z + (d > 1e-3 ? dz * k : 0); }
+      }
+    }
+  }
+
+  // 공이 터치라인·골라인 밖으로 나갔는지 (골은 checkGoal에서 먼저 처리)
+  checkOut() {
+    const b = this.ball, p = b.pos;
+    if (b.keeper || this.freezeT > 0) return;
+    const last = b.lastTouch ? b.lastTouch.team : 0;
+    if (Math.abs(p.z) > HALF_W + BALL_R) {
+      const team = 1 - last, sz = Math.sign(p.z);
+      const spot = new V3(clamp(p.x, -HALF_L + 1, HALF_L - 1), 0, sz * (HALF_W - 0.2));
+      this.msg(`아웃 - ${team === 0 ? '블루' : '레드'} 스로인`, 1.0);
+      this.freeze(1.0, 'out', () => this.setupSetPiece('throw', team, spot));
+    } else if (Math.abs(p.x) > HALF_L + BALL_R) {
+      const s = Math.sign(p.x), defending = s === 1 ? 1 : 0;   // +x 골대는 레드가 지킴
+      if (last === defending) {
+        const team = 1 - defending;
+        const spot = new V3(s * (HALF_L - 0.4), 0, (Math.sign(p.z) || 1) * (HALF_W - 0.4));
+        this.msg(`${team === 0 ? '블루' : '레드'} 코너킥`, 1.0);
+        this.freeze(1.0, 'out', () => this.setupSetPiece('corner', team, spot));
+      } else {
+        this.msg(`${defending === 0 ? '블루' : '레드'} 골킥`, 1.0);
+        this.freeze(1.0, 'out', () => this.setupSetPiece('goalkick', defending, null));
+      }
+    }
+  }
+
+  // ---------- 축구 규칙: 오프사이드 ----------
+  // 패스(킥·헤딩) 순간, 상대 진영에서 공과 뒤에서 두 번째 수비수보다 앞에 있던 같은 팀 선수를 기록
+  markOffside(kicker) {
+    const sp = this.setPiece;
+    if (sp && ['throw', 'corner', 'goalkick'].includes(sp.type)) { this.offside = null; return; }   // 이 재개에서는 오프사이드 없음
+    const d = kicker.dir;
+    const defs = [...this.players.filter(o => o.team !== kicker.team).map(o => o.pos.x * d), this.keepers[1 - kicker.team].pos.x * d].sort((a, c) => c - a);
+    const second = defs[1] ?? -1e9, bx = this.ball.pos.x * d;
+    const ids = new Set();
+    for (const q of this.players) {
+      if (q === kicker || q.team !== kicker.team) continue;
+      const qx = q.pos.x * d;
+      if (qx > 0 && qx > bx + 0.3 && qx > second + 0.3) ids.add(q.id);
+    }
+    this.offside = ids.size ? { team: kicker.team, ids } : null;
+  }
+  // 선수가 공을 건드릴 때 호출. 오프사이드면 반칙을 선언하고 true
+  touchCheck(p) {
+    const o = this.offside;
+    if (!o) return false;
+    if (p.team === o.team && o.ids.has(p.id)) {
+      this.offside = null;
+      const team = 1 - p.team, spot = new V3(clamp(p.pos.x, -HALF_L + 1, HALF_L - 1), 0, clamp(p.pos.z, -HALF_W + 1, HALF_W - 1));
+      const b = this.ball; b.owner = null; b.vel.set(0, 0, 0);
+      this.msg(`오프사이드! ${p.name || ''}`.trim(), 1.4);
+      this.freeze(1.2, 'foul', () => this.setupSetPiece('free', team, spot));
+      return true;
+    }
+    this.offside = null;   // 다른 선수가 먼저 건드리면 해제
+    return false;
   }
   freeze(t, kind, after = null) { this.freezeT = t; this.freezeKind = kind; this.afterFreeze = after; }
   giveBall(p) {
@@ -574,6 +735,7 @@ export class Game {
     if (k.type === 'ground') { vh = 4 + k.power * 16; vy = 0.15; if (k.power > 0.9) vy += rand(1, 3); }
     else if (k.type === 'lob') { vh = 6 + k.power * 14; vy = 3.5 + k.power * 7.5; spin = 18; }
     else { vh = 12 + k.power * 20; vy = 0.6 + k.power * 2.4; if (k.power > 0.9) vy += rand(1.5, 4); }
+    this.markOffside(p);
     b.pos.set(p.pos.x + dx * 0.55, BALL_R + 0.01, p.pos.z + dz * 0.55);
     b.release(new V3(dx * vh, vy, dz * vh), p);
     if (spin) b.spin.set(-dz * spin, 0, dx * spin);
@@ -595,7 +757,7 @@ export class Game {
           this.msg('커트 성공!', 0.8);
         } else this.msg('커트 실패', 0.6);
       }
-    } else if (!o && !b.keeper && b.pos.y < 1.0 && hdist(b.pos, _w) < 1.1) this.giveBall(p);
+    } else if (!o && !b.keeper && b.pos.y < 1.0 && hdist(b.pos, _w) < 1.1) { if (!this.touchCheck(p)) this.giveBall(p); }
   }
 
   tryShoulder(p) {
@@ -613,13 +775,22 @@ export class Game {
     }
   }
 
+  // 파울: 파울한 팀의 페널티 박스 안이면 페널티킥, 아니면 그 자리에서 프리킥
   foul(by, victim) {
-    this.msg('파울! 프리킥', 1.5);
     victim.state = 'normal';
     by.setState('recover', 1.6);
-    by.pos.x -= by.dir * 5;
-    this.giveBall(victim);
-    this.freeze(1.3, 'foul');
+    const ownGoalX = -by.dir * HALF_L;
+    const inBox = Math.abs(victim.pos.x - ownGoalX) < BOX_DEPTH && Math.abs(victim.pos.z) < BOX_HALF_W;
+    const b = this.ball; b.owner = null; b.vel.set(0, 0, 0);
+    if (inBox) {
+      this.msg('파울! 페널티킥', 1.6);
+      const spot = new V3(-by.dir * (HALF_L - PEN_SPOT), 0, 0);
+      this.freeze(1.5, 'foul', () => this.setupSetPiece('penalty', victim.team, spot, victim));
+    } else {
+      this.msg('파울! 프리킥', 1.5);
+      const spot = new V3(clamp(victim.pos.x, -HALF_L + 1, HALF_L - 1), 0, clamp(victim.pos.z, -HALF_W + 1, HALF_W - 1));
+      this.freeze(1.3, 'foul', () => this.setupSetPiece('free', victim.team, spot, victim));
+    }
   }
 
   step(dt) {
@@ -627,7 +798,7 @@ export class Game {
     if (this.state !== 'play') return;
     if (this.freezeT > 0) {
       this.freezeT -= dt;
-      if (this.freezeKind === 'goal') this.ball.step(dt);
+      if ((this.freezeKind === 'goal' || this.freezeKind === 'out') && !this.ball.owner && !this.ball.keeper) this.ball.step(dt);
       if (this.freezeT <= 0 && this.afterFreeze) { const f = this.afterFreeze; this.afterFreeze = null; f(); }
       this.syncOwnedBall(dt);
       return;
@@ -641,9 +812,14 @@ export class Game {
     for (const p of this.players) if (!p.isHuman) p.brain.update(dt);
     for (const p of this.players) p.update(dt);
     for (const k of this.keepers) k.update(dt);
+    this.updateSetPiece(dt);
     const b = this.ball;
     if (b.owner) this.syncOwnedBall(dt); else if (!b.keeper) b.step(dt);
-    this.handleSlides(); this.handleHeaders(); this.handleCapture(); this.handleBodyBlocks(); this.checkGoal();
+    this.handleSlides();
+    if (this.freezeT > 0) return;    // 파울이 선언되면 이번 틱은 여기서 멈춤
+    this.handleHeaders(); this.handleCapture(); this.handleBodyBlocks();
+    if (this.freezeT > 0) return;    // 오프사이드
+    this.checkGoal(); this.checkOut();
   }
 
   syncOwnedBall(dt) {
@@ -675,6 +851,7 @@ export class Game {
       _w.set(p.pos.x + sl.dir.x * 0.6, 0, p.pos.z + sl.dir.z * 0.6);
       if (!sl.touched && !b.keeper && b.pos.y < 0.35 && hdist(b.pos, _w) < 0.55) {
         sl.touched = true;
+        if (!b.owner && this.touchCheck(p)) return;
         const o = b.owner;
         if (o && o !== p) o.cd.noTouch = 0.5;
         const side = rand(-2, 2);
@@ -691,6 +868,8 @@ export class Game {
       if (p.headerT <= 0) continue;
       _w.set(p.pos.x + p.face.x * 0.12, 1.65 + p.y, p.pos.z + p.face.z * 0.12);
       if (b.pos.distanceTo(_w) > 0.7 || b.pos.y < 1.2) continue;
+      if (this.touchCheck(p)) return;
+      this.markOffside(p);
       const t = p.input.target;
       _v.set(t.x - p.pos.x, 0, t.z - p.pos.z);
       const d = _v.length() || 1; _v.multiplyScalar(1 / d);
@@ -710,16 +889,18 @@ export class Game {
     if (b.owner || b.keeper) return;
     let best = null, bd = 1e9;
     for (const p of this.players) {
-      if (p.cd.noTouch > 0 || p.y > 0.35 || !['normal', 'cut', 'skill'].includes(p.state)) continue;
+      if (p.cd.noTouch > 0 || !['normal', 'cut', 'skill'].includes(p.state)) continue;
       _w.set(p.pos.x + p.face.x * 0.35, 0, p.pos.z + p.face.z * 0.35);
       const d = hdist(b.pos, _w);
       const rel = Math.hypot(b.vel.x - p.vel.x, b.vel.z - p.vel.z);
-      const low = b.pos.y < 0.6 || (b.pos.y < 1.3 && rel < 9);
+      // 발 높이 기준 (점프 중이면 몸이 뜬 만큼 높아짐) → 점프해서 높은 공을 가슴·발로 받기 가능
+      const h = b.pos.y - p.y;
+      const low = (h > -0.2 && h < 0.6) || (h >= 0.6 && h < 1.4 && rel < 10);
       if (!low || d > 0.6) continue;
       if (rel < 17) { if (d < bd) { bd = d; best = p; } }
       else { b.vel.x *= -0.25; b.vel.z *= -0.25; b.vel.y = Math.abs(b.vel.y) * 0.3 + 0.5; b.lastTouch = p; p.cd.noTouch = 0.15; }
     }
-    if (best) this.giveBall(best);
+    if (best && !this.touchCheck(best)) this.giveBall(best);
   }
 
   handleBodyBlocks() {
@@ -729,6 +910,8 @@ export class Game {
       if (b.pos.y > 1.9 + p.y || b.pos.y < p.y) continue;
       const dx = b.pos.x - p.pos.x, dz = b.pos.z - p.pos.z, d = Math.hypot(dx, dz), R = 0.3 + BALL_R;
       if (d < R && d > 1e-6) {
+        if (this.touchCheck(p)) return;
+        b.lastTouch = p;
         const nx = dx / d, nz = dz / d;
         b.pos.x = p.pos.x + nx * R; b.pos.z = p.pos.z + nz * R;
         const rv = (b.vel.x - p.vel.x) * nx + (b.vel.z - p.vel.z) * nz;
@@ -782,6 +965,7 @@ export class Game {
       t: 's', st: this.state, tm: Math.ceil(this.timeLeft), sc: this.score,
       m: this.msgT > 0 ? this.msgText : '',
       o: b.owner ? b.owner.id : -1, k: b.keeper ? b.keeper.team : -1,
+      sp: this.setPiece ? [SP_TYPES.indexOf(this.setPiece.type), this.setPiece.team, this.setPiece.taker.id] : 0,
       b: [r(b.pos.x), r(b.pos.y), r(b.pos.z), r(b.vel.x), r(b.vel.y), r(b.vel.z)],
       p: this.players.map(p => [r(p.pos.x), r(p.pos.z), r(p.y), r(p.yaw), r(p.vel.x), r(p.vel.z),
         STATES.indexOf(p.state), r(p.stamina), p.charge ? KICKS.indexOf(p.charge.type) : 0, r(p.chargePower()),

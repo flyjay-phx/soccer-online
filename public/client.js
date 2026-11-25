@@ -5,7 +5,7 @@
 // - 입력(커서·키·클릭)은 서버로 보내고, 판정은 서버가 함
 // =====================================================================
 import * as THREE from 'three';
-import { HALF_L, HALF_W, FIELD_L, FIELD_W, GOAL_W, GOAL_H, GOAL_D, ARENA_X, ARENA_Z, BALL_R, POST_R, STATES, KSTATES, KICKS, clamp, wrap } from './sim.js';
+import { HALF_L, HALF_W, FIELD_L, FIELD_W, GOAL_W, GOAL_H, GOAL_D, ARENA_X, ARENA_Z, BALL_R, POST_R, STATES, KSTATES, KICKS, SP_TYPES, SP_NAMES, clamp, wrap } from './sim.js';
 
 const INTERP_MS = 100;
 const $ = id => document.getElementById(id);
@@ -238,10 +238,11 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyH') { $('help').hidden = !$('help').hidden; return; }
   if (/^Digit[1-4]$/.test(e.code)) { camMode = Number(e.code.slice(5)) - 1; store.set('soccer-cam', camMode); return; }
   if (!playing()) return;
-  const act = { KeyC: 'jump', KeyV: 'cut', KeyB: 'slide', ShiftLeft: 'shoulder', ShiftRight: 'shoulder', KeyQ: 'skillL', KeyE: 'skillR' }[e.code];
+  // 키 배치: Shift 달리기 / Z 슬라이딩 태클 / X 커트 / C 점프 / V 몸싸움 / A 천천히 걷기 / Q·E 개인기
+  const act = { KeyZ: 'slide', KeyX: 'cut', KeyC: 'jump', KeyV: 'shoulder', KeyQ: 'skillL', KeyE: 'skillR' }[e.code];
   if (act) { sendInput(); send({ t: 'a', a: act }); return; }
-  if (e.code === 'KeyZ') { input.run = true; sendInput(); }
-  if (e.code === 'KeyX') { input.slow = true; sendInput(); }
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { input.run = true; sendInput(); }
+  if (e.code === 'KeyA') { input.slow = true; sendInput(); }
   if (e.code === 'Space') {
     sendInput();
     if (myHasBall() && !localCharge) localCharge = { k: 'shot', t0: performance.now() };
@@ -249,8 +250,8 @@ addEventListener('keydown', e => {
   }
 });
 addEventListener('keyup', e => {
-  if (e.code === 'KeyZ') { input.run = false; sendInput(); }
-  if (e.code === 'KeyX') { input.slow = false; sendInput(); }
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { input.run = false; sendInput(); }
+  if (e.code === 'KeyA') { input.slow = false; sendInput(); }
   if (e.code === 'Space') { if (localCharge?.k === 'shot') localCharge = null; sendInput(); send({ t: 'sp', d: 0 }); }
 });
 addEventListener('blur', () => { input.run = input.slow = false; sendInput(); });
@@ -353,7 +354,13 @@ function updateHUD() {
   const me = roster.find(p => p.id === net.you);
   const humans = roster.filter(p => p.human).length;
   const ballTxt = s.o === net.you ? '내 공' : s.o >= 0 ? (roster[s.o]?.team === me?.team ? '우리 팀 공' : '상대 공') : s.k >= 0 ? (s.k === me?.team ? '우리 키퍼' : '상대 키퍼') : '루즈볼';
-  $('status').textContent = `방: ${net.room} · 접속 ${humans}명 · 핑 ${net.ping}ms\n공: ${ballTxt}`;
+  let spTxt = '';
+  if (s.sp) {
+    const type = SP_TYPES[s.sp[0]];
+    spTxt = `\n${SP_NAMES[type]} - ${s.sp[1] === 0 ? '블루' : '레드'}`;
+    if (s.sp[2] === net.you && type !== 'kickoff') spTxt += type === 'throw' ? '\n내가 던짐: 클릭으로 패스 (제자리)' : '\n내가 참: 클릭 패스 / Space 슛 (제자리)';
+  }
+  $('status').textContent = `방: ${net.room} · 접속 ${humans}명 · 핑 ${net.ping}ms\n공: ${ballTxt}${spTxt}`;
   $('status').style.whiteSpace = 'pre';
   $('cam').textContent = `카메라: ${CAMS[camMode]} (1~4)\n${me ? (me.team === 0 ? '블루 팀' : '레드 팀') : '관전 중'} · Tab: 팀·초대`;
   $('cam').style.whiteSpace = 'pre';
