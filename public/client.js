@@ -5,6 +5,7 @@
 // - 입력(커서·키·클릭)은 서버로 보내고, 판정은 서버가 함
 // =====================================================================
 import * as THREE from 'three';
+import { makePlayerMesh, animatePlayer, animateKeeper } from './anim.js';
 import { HALF_L, HALF_W, FIELD_L, FIELD_W, GOAL_W, GOAL_H, GOAL_D, ARENA_X, ARENA_Z, BALL_R, POST_R, STATES, KSTATES, KICKS, SP_TYPES, SP_NAMES, clamp, wrap } from './sim.js';
 
 const INTERP_MS = 100;
@@ -64,33 +65,6 @@ scene.add(sun);
     for (const z of [-GOAL_W / 2, GOAL_W / 2]) { const side = new THREE.Mesh(new THREE.PlaneGeometry(GOAL_D, GOAL_H, 4, 6), netM); side.position.set(gx + s * GOAL_D / 2, GOAL_H / 2, z); scene.add(side); }
   }
 })();
-
-function makePlayerMesh(shirt, shorts, isKeeper = false) {
-  const root = new THREE.Group(), pose = new THREE.Group(); root.add(pose);
-  const m = c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.65 });
-  const shirtM = m(shirt), shortsM = m(shorts), skinM = m(0xe9b98a), bootM = m(0x111111);
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.36, 4, 12), shirtM); torso.position.y = 1.12;
-  const hips = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.2, 0.42), shortsM); hips.position.y = 0.82;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 12), skinM); head.position.y = 1.66;
-  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.05, 0.05), skinM); nose.position.set(0.16, 1.66, 0);
-  pose.add(torso, hips, head, nose);
-  const legs = [], arms = [];
-  for (const z of [-0.11, 0.11]) {
-    const pivot = new THREE.Group(); pivot.position.set(0, 0.78, z);
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.72, 0.13), skinM); leg.position.y = -0.36;
-    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.13), bootM); boot.position.set(0.05, -0.74, 0);
-    pivot.add(leg, boot); pose.add(pivot); legs.push(pivot);
-  }
-  for (const z of [-0.3, 0.3]) {
-    const pivot = new THREE.Group(); pivot.position.set(0, 1.42, z);
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.55, 0.1), isKeeper ? shirtM : skinM); arm.position.y = -0.27; pivot.add(arm);
-    if (isKeeper) { const glove = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 0.14), m(0xffffff)); glove.position.y = -0.58; pivot.add(glove); }
-    pose.add(pivot); arms.push(pivot);
-  }
-  root.traverse(o => { if (o.isMesh) o.castShadow = true; });
-  root.userData = { pose, legs, arms, phase: 0 };
-  return root;
-}
 
 function makeLabel(text, color) {
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
@@ -327,34 +301,12 @@ function updateCamera(dt) {
 }
 
 function syncPlayerMesh(m, p, dt) {
-  const ud = m.userData, pose = ud.pose, st = STATES[p.st];
   m.position.set(p.x, p.y, p.z); m.rotation.y = -p.yaw;
-  if (ud.label) ud.label.rotation.y = 0;
-  const sp = Math.hypot(p.vx, p.vz);
-  ud.phase += sp * dt * 2.4;
-  const amp = Math.min(0.9, sp * 0.13);
-  ud.legs[0].rotation.z = Math.sin(ud.phase) * amp; ud.legs[1].rotation.z = -Math.sin(ud.phase) * amp;
-  ud.arms[0].rotation.z = -Math.sin(ud.phase) * amp * 0.8; ud.arms[1].rotation.z = Math.sin(ud.phase) * amp * 0.8;
-  if (p.kick) ud.legs[1].rotation.z = 1.1;
-  pose.rotation.set(0, 0, 0); pose.position.set(0, 0, 0);
-  if (st === 'slide') { pose.rotation.z = 1.15; pose.position.y = 0.25; ud.legs[1].rotation.z = 1.3; }
-  else if (st === 'stun') { pose.rotation.x = 1.35; pose.position.y = 0.25; }
-  else if (st === 'cut') { pose.rotation.z = -0.25; ud.legs[1].rotation.z = 0.9; }
-  else if (p.lean) pose.rotation.x = 0.3;
-  else if (p.head) pose.rotation.z = -0.3;
-  else pose.rotation.z = -Math.min(0.2, sp * 0.025);
+  animatePlayer(m, p, STATES[p.st], dt);   // 관절 애니메이션 (anim.js)
 }
-function syncKeeperMesh(m, k) {
-  const ud = m.userData, pose = ud.pose, st = KSTATES[k.st];
+function syncKeeperMesh(m, k, dt) {
   m.position.set(k.x, 0, k.z); m.rotation.y = -k.yaw;
-  pose.rotation.set(0, 0, 0); pose.position.set(0, 0, 0);
-  ud.arms[0].rotation.set(0, 0, 0); ud.arms[1].rotation.set(0, 0, 0);
-  if (st === 'dive') {
-    const left = k.dz * Math.cos(k.yaw) < 0;
-    pose.rotation.x = left ? -1.3 : 1.3; pose.position.y = Math.max(0.2, k.dy - 0.7);
-    ud.arms[0].rotation.x = ud.arms[1].rotation.x = left ? 2.6 : -2.6;
-  } else if (st === 'hold') ud.arms[0].rotation.z = ud.arms[1].rotation.z = 1.2;
-  else { ud.arms[0].rotation.z = ud.arms[1].rotation.z = 0.3; ud.arms[0].rotation.x = -0.4; ud.arms[1].rotation.x = 0.4; }
+  animateKeeper(m, k, KSTATES[k.st], dt);
 }
 
 const rollAxis = new THREE.Vector3();
@@ -430,7 +382,7 @@ function frame(now) {
 
   if (interpolate(now)) {
     view.players.forEach((p, i) => { const m = playerMeshes[i]; if (!m) return; m.visible = rosterAI || !!roster[i]?.human; if (m.visible) syncPlayerMesh(m, p, dt); });
-    keeperMeshes.forEach((m, i) => { m.visible = !!view.keepers[i]; if (m.visible) syncKeeperMesh(m, view.keepers[i]); });
+    keeperMeshes.forEach((m, i) => { m.visible = !!view.keepers[i]; if (m.visible) syncKeeperMesh(m, view.keepers[i], dt); });
     ballMesh.position.copy(view.ball);
     drawMini();
     const sp = Math.hypot(view.ballVel.x, view.ballVel.z);
